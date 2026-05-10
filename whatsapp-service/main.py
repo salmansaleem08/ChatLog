@@ -1,11 +1,15 @@
 """ChatLog automation service. Run: uvicorn main:app --host 0.0.0.0 --port $PORT"""
 
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from session_manager import get_manager, normalize_business_id
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 app = FastAPI(title="ChatLog Service")
 

@@ -24,6 +24,8 @@ build/
 .env.*
 !.env.example
 !.env*.example
+!whatsapp-service/.env.example
+!web/.env.local.example
 
 # Next.js
 .next/
