@@ -8,6 +8,7 @@ On Render: RENDER=true → headless. Ephemeral /tmp profiles on free tier (no di
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -25,6 +26,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 WA_URL = "https://web.whatsapp.com/"
+
+log = logging.getLogger("chatlog.whatsapp")
 
 # WhatsApp paints the login QR asynchronously; instant canvas queries often miss it.
 _QR_WAIT_SEC = float(os.environ.get("WHATSAPP_QR_WAIT_SEC", "40"))
@@ -217,16 +220,77 @@ class WhatsAppSessionManager:
             return normalized
         return None
 
+    def _wait_ready_for_chat_list(self, driver: webdriver.Chrome, timeout: float = 55.0) -> None:
+        """
+        WhatsApp often paints the sidebar after first paint; avoid false not_logged_in.
+        If a QR canvas is stable while the chat list never appears, treat as logged out.
+        """
+        started = time.time()
+        deadline = started + timeout
+        qr_streak = 0
+        last_log = started
+        refreshed = False
+        while time.time() < deadline:
+            try:
+                url = str(driver.current_url or "")[:120]
+            except Exception:
+                url = "(url_unavailable)"
+            if self._detect_logged_in(driver):
+                log.info(
+                    "wait_chat_list_ready ok business_id=%s url=%s",
+                    self._business_id,
+                    url,
+                )
+                return
+            # Large QR only — tiny canvases during load caused false "logged out".
+            has_login_qr = self._pick_qr_canvas(driver) is not None
+            if has_login_qr:
+                qr_streak += 1
+            else:
+                qr_streak = 0
+            if qr_streak >= 4:
+                log.warning(
+                    "wait_chat_list_ready qr_only business_id=%s url=%s",
+                    self._business_id,
+                    url,
+                )
+                raise RuntimeError("not_logged_in")
+            now = time.time()
+            if now - last_log >= 10:
+                log.info(
+                    "wait_chat_list_ready pending business_id=%s url=%s login_qr=%s",
+                    self._business_id,
+                    url,
+                    has_login_qr,
+                )
+                last_log = now
+            if not refreshed and now - started > 12:
+                try:
+                    driver.refresh()
+                    refreshed = True
+                except Exception:
+                    pass
+            time.sleep(0.45)
+        try:
+            tail_url = str(driver.current_url or "")[:120]
+        except Exception:
+            tail_url = "(url_unavailable)"
+        log.warning(
+            "wait_chat_list_ready timeout business_id=%s url=%s",
+            self._business_id,
+            tail_url,
+        )
+        raise RuntimeError("chat_list_timeout")
+
     def list_chats(self, scroll_rounds: int = 32) -> List[Dict[str, Any]]:
         with self._lock:
             driver = self._driver
             if driver is None:
                 raise RuntimeError("driver_not_initialized")
-            if not self._detect_logged_in(driver):
-                raise RuntimeError("not_logged_in")
             driver.set_page_load_timeout(120)
             if not str(driver.current_url or "").startswith(WA_URL):
                 driver.get(WA_URL)
+            self._wait_ready_for_chat_list(driver)
 
             try:
                 WebDriverWait(driver, 65).until(
@@ -235,6 +299,11 @@ class WhatsAppSessionManager:
                     )
                 )
             except Exception as exc:
+                log.warning(
+                    "list_chats sidebar_wait_failed business_id=%s",
+                    self._business_id,
+                    exc_info=True,
+                )
                 raise RuntimeError("chat_list_timeout") from exc
 
             aggregated: Dict[str, Dict[str, Any]] = {}
@@ -258,6 +327,11 @@ class WhatsAppSessionManager:
                 return int(ms)
 
             chats.sort(key=_sort_key, reverse=True)
+            log.info(
+                "list_chats ok business_id=%s count=%s",
+                self._business_id,
+                len(chats),
+            )
             return chats
 
     @staticmethod
@@ -554,6 +628,9 @@ class WhatsAppSessionManager:
             '[data-testid="chat-list"]',
             '[data-testid="conversation-panel-wrapper"]',
             '[data-testid="default-user"]',
+            "#pane-side",
+            '[data-testid="chatlist-panel"]',
+            '[data-testid="cell-frame-container"]',
         )
         for sel in selectors:
             if driver.find_elements(By.CSS_SELECTOR, sel):

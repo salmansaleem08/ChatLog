@@ -28,6 +28,13 @@ type ChatRow = {
   lastAnalyzedAt: string | null;
 };
 
+type ChatDiagnostics = {
+  correlationId: string;
+  failureCode: string;
+  upstreamHttpStatus?: number;
+  upstreamDetailSnippet?: string;
+};
+
 type ChatsPayload = {
   ok?: boolean;
   serviceConfigured?: boolean;
@@ -36,6 +43,7 @@ type ChatsPayload = {
   error?: string;
   warning?: string;
   code?: string;
+  diagnostics?: ChatDiagnostics;
 };
 
 function formatPhoneDisplay(digits: string): string {
@@ -72,6 +80,8 @@ export function ChatsClient({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ChatDiagnostics | null>(null);
+  const [copiedDiag, setCopiedDiag] = useState(false);
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [linkStatus, setLinkStatus] =
     useState<WhatsappLinkStatus>(initialLinkStatus);
@@ -81,6 +91,8 @@ export function ChatsClient({
   const load = useCallback(async () => {
     setError(null);
     setWarning(null);
+    setDiagnostics(null);
+    setCopiedDiag(false);
     setLoading(true);
     try {
       const res = await fetch("/api/whatsapp/chats");
@@ -91,10 +103,20 @@ export function ChatsClient({
             "We couldn’t load conversations. Try again in a few minutes."
         );
         setRows([]);
+        if (data.diagnostics?.correlationId) {
+          setDiagnostics(data.diagnostics);
+        }
         return;
       }
       if (typeof data.warning === "string" && data.warning.trim().length > 0) {
         setWarning(data.warning);
+      }
+      if (
+        data.diagnostics &&
+        typeof data.diagnostics === "object" &&
+        typeof data.diagnostics.correlationId === "string"
+      ) {
+        setDiagnostics(data.diagnostics);
       }
       if (typeof data.whatsapp_link_status === "string") {
         const s = data.whatsapp_link_status;
@@ -156,9 +178,21 @@ export function ChatsClient({
 
   const needsLink = linkStatus !== "connected";
 
+  async function copyDiagnostics() {
+    if (!diagnostics) return;
+    const text = JSON.stringify(diagnostics, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedDiag(true);
+      window.setTimeout(() => setCopiedDiag(false), 2000);
+    } catch {
+      setError("Could not copy. Select the text below instead.");
+    }
+  }
+
   return (
-    <div className="mx-auto max-w-5xl space-y-8 pb-20">
-      <header className="space-y-2 border-b border-border pb-8">
+    <div className="mx-auto w-full min-w-0 max-w-5xl space-y-5 overflow-x-hidden pb-24 sm:space-y-8 sm:pb-20">
+      <header className="space-y-2 border-b border-border pb-6 sm:pb-8">
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
           Chats
         </h1>
@@ -184,6 +218,31 @@ export function ChatsClient({
         >
           {warning}
         </p>
+      ) : null}
+
+      {diagnostics ? (
+        <details className="rounded-lg border border-border bg-muted/40 text-foreground">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium">
+            Details to copy for support
+          </summary>
+          <div className="border-t border-border px-4 py-3">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Paste this block in your message if you need help troubleshooting.
+            </p>
+            <pre className="mt-3 max-h-48 overflow-auto rounded-md border border-border bg-background p-3 text-[11px] leading-snug text-foreground">
+              {JSON.stringify(diagnostics, null, 2)}
+            </pre>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3 h-9"
+              onClick={() => void copyDiagnostics()}
+            >
+              {copiedDiag ? "Copied" : "Copy details"}
+            </Button>
+          </div>
+        </details>
       ) : null}
 
       {needsLink ? (
@@ -247,19 +306,31 @@ export function ChatsClient({
           Loading conversations…
         </div>
       ) : needsLink ? null : filtered.length === 0 ? (
-        <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-6 py-16 text-center shadow-sm">
+        <div className="flex min-h-[14rem] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-4 py-12 text-center shadow-sm sm:min-h-[16rem] sm:px-6 sm:py-16">
           <MessageCircle
             className="size-10 text-muted-foreground/70"
             strokeWidth={1.25}
             aria-hidden
           />
           <p className="mt-4 text-sm font-medium text-foreground">
-            No conversations yet
+            {warning ? "No saved conversations to show" : "No conversations yet"}
           </p>
           <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-            When customers message your linked WhatsApp, their threads appear
-            here—newest first.
+            {warning
+              ? "We could not load a fresh list from WhatsApp. After you reconnect in Settings, tap Refresh. Once a sync succeeds, threads appear here even if the live link blips."
+              : "When customers message your linked WhatsApp, their threads appear here—newest first."}
           </p>
+          {warning ? (
+            <Link
+              href="/dashboard/settings"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "mt-6 h-10"
+              )}
+            >
+              Open Settings
+            </Link>
+          ) : null}
         </div>
       ) : (
         <ul className="space-y-2">

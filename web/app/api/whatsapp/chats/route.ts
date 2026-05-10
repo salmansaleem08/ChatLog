@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 import { NextResponse } from "next/server";
 
 import {
@@ -7,6 +9,7 @@ import {
 } from "@/lib/chatlog-automation";
 import { canAnalyzeThreadState } from "@/lib/whatsapp-analysis-eligibility";
 import { createClient } from "@/lib/supabase/server";
+import { syncWhatsappProfile } from "@/lib/whatsapp-profile-sync";
 
 export const maxDuration = 120;
 
@@ -64,6 +67,57 @@ function toChatPayloadFromStored(rows: StoredThreadRow[]) {
     });
 }
 
+function parseChatsListFailureCode(detail: string): string {
+  const prefix = "cannot_list_chats:";
+  const idx = detail.indexOf(prefix);
+  if (idx !== -1) {
+    const rest = detail.slice(idx + prefix.length).trim();
+    return (rest.split(/[\s,]/)[0] || "unknown").trim();
+  }
+  if (detail.includes("not_logged_in")) return "not_logged_in";
+  if (detail.includes("chat_list_timeout")) return "chat_list_timeout";
+  return "unknown";
+}
+
+function userSafeWarningForListFailure(failureCode: string): string {
+  if (failureCode === "not_logged_in") {
+    return "We couldn't confirm an active WhatsApp session. Open Settings to reconnect, then try Refresh.";
+  }
+  if (failureCode === "chat_list_timeout") {
+    return "WhatsApp took too long to load. Wait a moment and tap Refresh.";
+  }
+  return "Live WhatsApp is temporarily unavailable. Showing any conversations already saved for your account.";
+}
+
+async function refreshWhatsappLinkFromAutomationProbe(
+  supabase: ReturnType<typeof createClient>,
+  userId: string
+): Promise<void> {
+  try {
+    const res = await automationFetch(
+      `/whatsapp/session/status?business_id=${encodeURIComponent(userId)}`,
+      { method: "GET" }
+    );
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return;
+    }
+    const remote = {
+      logged_in: Boolean(body.logged_in),
+      needs_qr: Boolean(body.needs_qr),
+      running: Boolean(body.running),
+    };
+    const upstreamPhone =
+      typeof body.linked_phone_e164 === "string" &&
+      body.linked_phone_e164.trim().length > 0
+        ? body.linked_phone_e164.trim()
+        : undefined;
+    await syncWhatsappProfile(supabase, userId, remote, upstreamPhone);
+  } catch {
+    /* keep prior profile if probe fails */
+  }
+}
+
 export async function GET() {
   const supabase = createClient();
   const {
@@ -104,17 +158,27 @@ export async function GET() {
         typeof body.detail === "string"
           ? body.detail
           : JSON.stringify(body.detail ?? {});
-      let code =
-        typeof body.detail === "string" &&
-        body.detail.includes("cannot_list_chats:not_logged_in")
-          ? ("not_logged_in" as const)
-          : undefined;
-      if (
-        typeof detail === "string" &&
-        detail.includes("not_logged_in")
-      ) {
-        code = "not_logged_in";
-      }
+      const failureCode =
+        typeof detail === "string"
+          ? parseChatsListFailureCode(detail)
+          : "unknown";
+
+      await refreshWhatsappLinkFromAutomationProbe(supabase, user.id);
+
+      const correlationId = randomUUID();
+      console.info(
+        "[whatsapp/chats]",
+        JSON.stringify({
+          tag: "chats_list_upstream_error",
+          correlationId,
+          businessId: user.id,
+          upstreamHttpStatus: res.status,
+          failureCode,
+          upstreamDetail:
+            typeof detail === "string" ? detail.slice(0, 400) : String(detail),
+        })
+      );
+
       const { data: existing } = await supabase
         .from("whatsapp_chat_threads")
         .select(
@@ -142,11 +206,18 @@ export async function GET() {
 
       return NextResponse.json({
         ok: false,
-        warning: "Live WhatsApp is temporarily unavailable. Showing your last synced chats.",
+        warning: userSafeWarningForListFailure(failureCode),
         serviceConfigured: true,
         chats: fallbackRows,
         upstreamStatus: res.status,
-        code,
+        code: failureCode,
+        diagnostics: {
+          correlationId,
+          failureCode,
+          upstreamHttpStatus: res.status,
+          upstreamDetailSnippet:
+            typeof detail === "string" ? detail.slice(0, 240) : undefined,
+        },
         whatsapp_link_status:
           (waProfile?.whatsapp_link_status as string) ?? "disconnected",
         detail: process.env.NODE_ENV === "development" ? detail : undefined,
@@ -326,7 +397,17 @@ export async function GET() {
         { status: 503 }
       );
     }
+    const correlationId = randomUUID();
     console.error("[whatsapp/chats] GET", e);
+    console.info(
+      "[whatsapp/chats]",
+      JSON.stringify({
+        tag: "chats_list_exception",
+        correlationId,
+        businessId: user.id,
+        message: e instanceof Error ? e.message : String(e),
+      })
+    );
 
     const dev =
       process.env.NODE_ENV === "development"
@@ -366,6 +447,10 @@ export async function GET() {
         (waProfile?.whatsapp_link_status as string) ?? "disconnected",
       error: "Something went wrong. Try again shortly.",
       code: "upstream_unreachable",
+      diagnostics: {
+        correlationId,
+        failureCode: "upstream_unreachable",
+      },
     });
   }
 }

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,6 +15,14 @@ from pydantic import BaseModel, Field
 from session_manager import get_manager, normalize_business_id
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [chatlog] %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger("chatlog.api")
 
 app = FastAPI(title="ChatLog Service")
 
@@ -91,16 +101,27 @@ def whatsapp_chats_list(
         raise HTTPException(status_code=400, detail="Invalid business_id") from exc
     mgr = get_manager(bid)
     try:
+        log.info("chats_list start business_id=%s", bid)
         mgr.ensure_started()
         chats = mgr.list_chats()
+        log.info("chats_list ok business_id=%s count=%s", bid, len(chats))
         return {"ok": True, "business_id": bid, "chats": chats}
     except RuntimeError as exc:
         reason = str(exc)
-        code = (
-            409
-            if reason in ("not_logged_in",)
-            else 503 if reason.startswith("driver") else 500
+        log.warning(
+            "chats_list failed business_id=%s reason=%s",
+            bid,
+            reason,
+            exc_info=True,
         )
+        if reason == "not_logged_in":
+            code = 409
+        elif reason in ("chat_list_timeout", "driver_not_initialized") or reason.startswith(
+            "driver"
+        ):
+            code = 503
+        else:
+            code = 500
         raise HTTPException(status_code=code, detail=f"cannot_list_chats:{reason}") from exc
 
 
