@@ -1,6 +1,19 @@
 # Vercel (Next.js) + automation on your computer
 
-You can deploy **only the web app** to Vercel and run **FastAPI + Selenium + Chrome** on your own Mac or PC. The browser never talks to your machine directly for secrets: Next.js **API routes** on Vercel call your backend over HTTPS.
+You can deploy **only the web app** to Vercel and run **FastAPI + Selenium + Chrome** on **whichever machine you’re using** (your Mac today, another PC later). Same idea everywhere: that machine runs uvicorn + Chrome; Vercel only hosts Next.js.
+
+## Simple setup (your machine + Vercel)
+
+1. **Vercel** — keep hosting the Next app as you do now (Supabase env vars unchanged).
+2. **On your Mac** — in `whatsapp-service`, set `CHATLOG_AUTOMATION_SECRET` in `.env`, then run:  
+   `uvicorn main:app --host 127.0.0.1 --port 8000`
+3. **Tunnel** — run something like `ngrok http 8000` so you get an `https://…` URL that forwards to your Mac.
+4. **Vercel env** — set `CHATLOG_AUTOMATION_URL` to that `https://…` URL (same secret as step 2). Redeploy.
+5. **When you use the live site** — leave **uvicorn + tunnel** running on your Mac. Stop them when you’re done; WhatsApp linking on production will fail until they’re up again.
+
+**Another computer later:** clone the repo, copy `.env`, run uvicorn there, start a tunnel on *that* machine, then update **Vercel → `CHATLOG_AUTOMATION_URL`** to the new tunnel URL (one “backend” at a time unless you run multiple environments).
+
+---
 
 ## The constraint
 
