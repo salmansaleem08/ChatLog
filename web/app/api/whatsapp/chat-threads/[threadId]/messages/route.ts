@@ -21,7 +21,12 @@ export async function GET(
   _request: Request,
   { params }: { params: { threadId: string } }
 ) {
+  const routeStart = Date.now();
   const threadId = params.threadId?.trim();
+  console.info("[chat_messages] step=request_arrived", {
+    threadId: threadId || "(empty)",
+    ts: new Date().toISOString(),
+  });
   if (!threadId) {
     console.error("[chat_messages] step=thread_param missing");
     return NextResponse.json({ error: "Missing chat.", ok: false }, { status: 400 });
@@ -106,9 +111,12 @@ export async function GET(
       chat_jid: waChatJid,
     }).toString();
 
+    const waFetchStart = Date.now();
     console.info("[chat_messages] step=automation_fetch_start", {
       threadId,
+      waChatJid,
       timeoutMs: AUTOMATION_FETCH_VERCEL_SAFE_MS,
+      routeElapsedMs: waFetchStart - routeStart,
     });
 
     const res = await automationFetchLong(
@@ -116,6 +124,14 @@ export async function GET(
       { method: "GET" },
       AUTOMATION_FETCH_VERCEL_SAFE_MS
     );
+
+    const waFetchElapsed = Date.now() - waFetchStart;
+    console.info("[chat_messages] step=automation_fetch_complete", {
+      threadId,
+      httpStatus: res.status,
+      ok: res.ok,
+      elapsedMs: waFetchElapsed,
+    });
 
     let body: Record<string, unknown>;
     try {
@@ -196,27 +212,43 @@ export async function GET(
     // Store the snapshot so the analyze step can read from DB without needing
     // the client to pass the transcript back in the request body.
     if (transcript) {
+      const snapshotPayload = {
+        snapshot_transcript: transcript,
+        snapshot_latest_msg_at: latestIso ?? new Date().toISOString(),
+      };
+      console.info("[chat_messages] step=store_snapshot_start", {
+        threadId,
+        transcriptChars: transcript.length,
+        latestIso,
+      });
       const { error: snapErr } = await supabase
         .from("whatsapp_chat_threads")
-        .update({
-          snapshot_transcript: transcript,
-          snapshot_latest_msg_at: latestIso ?? new Date().toISOString(),
-        })
+        .update(snapshotPayload)
         .eq("id", threadId)
         .eq("business_id", userId!);
       if (snapErr) {
-        console.error("[chat_messages] step=store_snapshot", {
+        console.error("[chat_messages] step=store_snapshot_error", {
           threadId,
           message: snapErr.message,
+          code: snapErr.code,
         });
+      } else {
+        console.info("[chat_messages] step=store_snapshot_ok", { threadId });
       }
+    } else {
+      console.warn("[chat_messages] step=store_snapshot_skipped_empty_transcript", {
+        threadId,
+        messageCount: messages.length,
+      });
     }
 
-    console.info("[chat_messages] step=done_ok", {
+    const totalElapsedMs = Date.now() - routeStart;
+    console.info("[chat_messages] step=sending_response", {
       threadId,
       messageCount: messages.length,
       transcriptChars: transcript.length,
       hasLatestIso: Boolean(latestIso),
+      totalElapsedMs,
     });
 
     return NextResponse.json({
@@ -230,6 +262,7 @@ export async function GET(
       console.error("[chat_messages] step=automation_abort_timeout", {
         threadId,
         timeoutMs: AUTOMATION_FETCH_VERCEL_SAFE_MS,
+        routeElapsedMs: Date.now() - routeStart,
       });
       return NextResponse.json(
         {

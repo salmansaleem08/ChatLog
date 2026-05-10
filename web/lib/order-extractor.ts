@@ -84,6 +84,12 @@ async function geminiExtract(
     process.env.GEMINI_MODEL?.trim()?.replace(/^["']+|["']+$/g, "") ||
     "gemini-1.5-flash";
 
+  console.info("[order-extractor] step=gemini_start", {
+    model,
+    promptChars: userPrompt.length + systemPrompt.length,
+  });
+  const geminiStart = Date.now();
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
   )}:generateContent?key=${encodeURIComponent(key)}`;
@@ -112,10 +118,22 @@ async function geminiExtract(
   });
 
   const raw = (await res.json()) as Record<string, unknown>;
+  const geminiElapsed = Date.now() - geminiStart;
   if (!res.ok) {
-    console.error("[geminiExtract] API error", res.status, raw);
+    console.error("[order-extractor] step=gemini_failed", {
+      model,
+      httpStatus: res.status,
+      elapsedMs: geminiElapsed,
+      errorCode: (raw.error as Record<string, unknown> | undefined)?.code,
+    });
     throw new Error("GEMINI_FAILED");
   }
+
+  console.info("[order-extractor] step=gemini_done", {
+    model,
+    httpStatus: res.status,
+    elapsedMs: geminiElapsed,
+  });
 
   const text = extractGeminiText(raw);
   return parseJsonPayload(text);
@@ -146,6 +164,12 @@ async function openRouterExtract(
   const model =
     process.env.OPENROUTER_MODEL?.trim() || "google/gemma-2-9b-it:free";
 
+  console.info("[order-extractor] step=openrouter_start", {
+    model,
+    promptChars: userPrompt.length + systemPrompt.length,
+  });
+  const orStart = Date.now();
+
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -166,10 +190,22 @@ async function openRouterExtract(
     error?: { message?: string };
   };
 
+  const orElapsed = Date.now() - orStart;
   if (!res.ok || !body?.choices?.[0]?.message?.content) {
-    console.error("[openRouterExtract]", res.status, body);
+    console.error("[order-extractor] step=openrouter_failed", {
+      model,
+      httpStatus: res.status,
+      elapsedMs: orElapsed,
+      errorMsg: body?.error?.message,
+    });
     throw new Error("OPENROUTER_FAILED");
   }
+
+  console.info("[order-extractor] step=openrouter_done", {
+    model,
+    httpStatus: res.status,
+    elapsedMs: orElapsed,
+  });
 
   return parseJsonPayload(body.choices[0].message.content);
 }

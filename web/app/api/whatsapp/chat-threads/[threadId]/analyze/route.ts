@@ -27,7 +27,12 @@ export async function POST(
   _request: Request,
   { params }: { params: { threadId: string } }
 ) {
+  const routeStart = Date.now();
   const threadId = params.threadId?.trim();
+  console.info("[analyze] step=request_arrived", {
+    threadId: threadId || "(empty)",
+    ts: new Date().toISOString(),
+  });
   if (!threadId) {
     console.error("[analyze] step=validate_thread_param missing_thread_id");
     return NextResponse.json(
@@ -139,6 +144,15 @@ export async function POST(
     ? String(thread!.snapshot_latest_msg_at).trim()
     : "";
 
+  console.info("[analyze] step=snapshot_read", {
+    threadId,
+    snapshotFound: Boolean(transcript),
+    transcriptChars: transcript.length,
+    snapshotLatestMsgAt: latestIsoRaw || null,
+    lastAnalyzedAt: thread!.last_analyzed_at,
+    extractionWatermarkAt: thread!.extraction_watermark_at,
+  });
+
   if (!transcript) {
     console.error("[analyze] step=validate_snapshot missing_transcript", {
       threadId,
@@ -234,16 +248,30 @@ export async function POST(
   );
   const catalogueJson = JSON.stringify(catalogue, null, 2);
 
+  console.info("[analyze] step=ai_start", {
+    threadId,
+    transcriptChars: transcript.length,
+    catalogueItems: catalogue.length,
+    routeElapsedMs: Date.now() - routeStart,
+  });
+
+  const aiStart = Date.now();
   let extraction: ParsedExtractionPayload;
   try {
     extraction = await extractOrdersStructuredJson({
       transcript,
       catalogueJson,
     });
+    console.info("[analyze] step=ai_done", {
+      threadId,
+      elapsedMs: Date.now() - aiStart,
+      itemCount: extraction.items.length,
+    });
   } catch (e) {
-    console.error("[analyze] step=ai_extract", {
+    console.error("[analyze] step=ai_extract_failed", {
       threadId,
       userId,
+      elapsedMs: Date.now() - aiStart,
       err: e instanceof Error ? e.stack ?? e.message : String(e),
     });
     return NextResponse.json(
@@ -476,7 +504,7 @@ export async function POST(
 
       const inv = await applyInventoryForInsertedLines(supabase, rowsForStock);
       if (inv.error) {
-        console.error("[analyze] step=apply_inventory", {
+        console.error("[analyze] step=apply_inventory_failed", {
           threadId,
           message: inv.error,
         });
@@ -550,10 +578,12 @@ export async function POST(
     );
   }
 
-  console.info("[analyze] step=done_ok", {
+  const totalElapsedMs = Date.now() - routeStart;
+  console.info("[analyze] step=sending_response", {
     threadId,
     userId,
     lineCount: insertRows.length,
+    totalElapsedMs,
   });
 
   return NextResponse.json({

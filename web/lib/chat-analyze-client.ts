@@ -199,89 +199,182 @@ export type InterpretThreadResult =
 
 export type AnalyzeStep = "fetching" | "analyzing";
 
+/** Hard cap: spinner always clears after this even if the server never responds. */
+const GLOBAL_ANALYZE_TIMEOUT_MS = 90_000;
+
 /**
  * Two-step interpretation:
  *   1. GET /messages  — fetches from WhatsApp and stores snapshot in DB.
  *   2. POST /analyze  — reads snapshot from DB, runs AI, persists results.
  *
  * `onStep` fires as each step begins so the caller can update UI labels.
- * The function always resolves (never hangs): AbortController timeouts and
- * network errors are caught and returned as { ok: false }.
+ * A 90-second global timeout ensures the spinner ALWAYS clears — the function
+ * is guaranteed to resolve (never hang) regardless of server behaviour.
  */
 export async function interpretChatThread(
   threadId: string,
   options?: { onStep?: (step: AnalyzeStep) => void }
 ): Promise<InterpretThreadResult> {
   const analyzeUrl = `/api/whatsapp/chat-threads/${threadId}/analyze`;
+  const globalStart = Date.now();
 
-  options?.onStep?.("fetching");
-  const snap = await fetchThreadMessagesSnapshot(threadId);
-  if (!snap.ok) {
-    return snap;
-  }
-
-  options?.onStep?.("analyzing");
-
-  const acAnalyze = new AbortController();
-  const analyzeTimer = setTimeout(
-    () => acAnalyze.abort(),
-    CHAT_ANALYZE_STEP_TIMEOUT_MS
+  // Global hard cap — guarantees spinner always clears.
+  const globalController = new AbortController();
+  const globalTimer = setTimeout(
+    () => globalController.abort(),
+    GLOBAL_ANALYZE_TIMEOUT_MS
   );
-  let annRes: Response;
+
+  const elapsed = () => Date.now() - globalStart;
+
   try {
-    // No transcript in body — the analyze route reads it from the DB snapshot
-    // stored by the GET /messages step above.
-    annRes = await fetch(analyzeUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-      signal: acAnalyze.signal,
-      cache: "no-store",
-    });
-  } catch (e) {
-    clearTimeout(analyzeTimer);
-    if (e instanceof Error && e.name === "AbortError") {
-      return { ok: false, message: abortedMessage() };
+    // ── Step 1: fetch WhatsApp messages + store snapshot in DB ──────────────
+    options?.onStep?.("fetching");
+    console.log("[analyze-client] step1_start", { threadId, t: elapsed() });
+
+    let snap: ThreadSnapshotResult;
+    try {
+      snap = await fetchThreadMessagesSnapshot(threadId, {
+        signal: globalController.signal,
+      });
+    } catch (e) {
+      console.log("[analyze-client] step1_unexpected_throw", {
+        threadId,
+        err: String(e),
+        t: elapsed(),
+      });
+      return { ok: false, message: networkMessage() };
     }
-    return { ok: false, message: networkMessage() };
+
+    console.log("[analyze-client] step1_done", {
+      threadId,
+      ok: snap.ok,
+      error: snap.ok ? undefined : snap.message,
+      globalAborted: globalController.signal.aborted,
+      t: elapsed(),
+    });
+
+    if (!snap.ok) {
+      if (globalController.signal.aborted) {
+        return {
+          ok: false,
+          message: "This is taking longer than expected. Please try again.",
+        };
+      }
+      return snap;
+    }
+
+    // ── Step 2: run AI + persist results (reads transcript from DB) ──────────
+    options?.onStep?.("analyzing");
+    console.log("[analyze-client] step2_start", { threadId, t: elapsed() });
+
+    const stepController = new AbortController();
+    const stepTimer = setTimeout(
+      () => stepController.abort(),
+      CHAT_ANALYZE_STEP_TIMEOUT_MS
+    );
+    // Propagate global abort into the step controller.
+    globalController.signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(stepTimer);
+        stepController.abort();
+      },
+      { once: true }
+    );
+
+    let annRes: Response;
+    try {
+      // No transcript in body — the analyze route reads from the DB snapshot
+      // written by GET /messages above.
+      annRes = await fetch(analyzeUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        signal: stepController.signal,
+        cache: "no-store",
+      });
+    } catch (e) {
+      clearTimeout(stepTimer);
+      const isAbort = e instanceof Error && e.name === "AbortError";
+      console.log("[analyze-client] step2_fetch_error", {
+        threadId,
+        type: isAbort ? "abort" : "network",
+        globalAborted: globalController.signal.aborted,
+        err: String(e),
+        t: elapsed(),
+      });
+      if (globalController.signal.aborted) {
+        return {
+          ok: false,
+          message: "This is taking longer than expected. Please try again.",
+        };
+      }
+      if (isAbort) {
+        return { ok: false, message: abortedMessage() };
+      }
+      return { ok: false, message: networkMessage() };
+    }
+    clearTimeout(stepTimer);
+
+    console.log("[analyze-client] step2_response", {
+      threadId,
+      status: annRes.status,
+      ok: annRes.ok,
+      t: elapsed(),
+    });
+
+    let annJson: Record<string, unknown>;
+    try {
+      annJson = (await annRes.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      return {
+        ok: false,
+        message: "We couldn’t read the server response. Try again.",
+      };
+    }
+
+    const serverErr =
+      typeof annJson.error === "string" && annJson.error.trim().length > 0
+        ? annJson.error.trim()
+        : null;
+
+    if (!annRes.ok) {
+      console.log("[analyze-client] step2_server_error", {
+        threadId,
+        status: annRes.status,
+        serverErr,
+        t: elapsed(),
+      });
+      return {
+        ok: false,
+        message:
+          serverErr ??
+          "We couldn’t finish interpreting this thread. Try again shortly.",
+      };
+    }
+
+    if (annJson.ok !== true) {
+      console.log("[analyze-client] step2_not_ok", {
+        threadId,
+        serverErr,
+        annOk: annJson.ok,
+        t: elapsed(),
+      });
+      return {
+        ok: false,
+        message:
+          serverErr ??
+          "We couldn’t finish interpreting this thread. Try again shortly.",
+      };
+    }
+
+    console.log("[analyze-client] step2_success", { threadId, t: elapsed() });
+    return { ok: true };
+  } finally {
+    clearTimeout(globalTimer);
   }
-  clearTimeout(analyzeTimer);
-
-  let annJson: Record<string, unknown>;
-  try {
-    annJson = (await annRes.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    return {
-      ok: false,
-      message: "We couldn’t read the server response. Try again.",
-    };
-  }
-
-  const serverErr =
-    typeof annJson.error === "string" && annJson.error.trim().length > 0
-      ? annJson.error.trim()
-      : null;
-
-  if (!annRes.ok) {
-    return {
-      ok: false,
-      message:
-        serverErr ??
-        "We couldn’t finish interpreting this thread. Try again shortly.",
-    };
-  }
-
-  if (annJson.ok !== true) {
-    return {
-      ok: false,
-      message:
-        serverErr ??
-        "We couldn’t finish interpreting this thread. Try again shortly.",
-    };
-  }
-
-  return { ok: true };
 }
