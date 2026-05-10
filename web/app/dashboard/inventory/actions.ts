@@ -126,10 +126,49 @@ async function ensureUser(supabase: ReturnType<typeof createClient>) {
   return user;
 }
 
+/**
+ * Some legacy accounts can exist without a profiles row.
+ * Inventory writes require `products.business_id -> profiles.id`, so we ensure
+ * the row exists before first product creation.
+ */
+async function ensureProfileForUser(
+  supabase: ReturnType<typeof createClient>,
+  user: { id: string; email?: string | null; user_metadata?: Record<string, unknown> }
+): Promise<boolean> {
+  const { data: profile, error: readErr } = await supabase
+    .from("profiles")
+    .select("id")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (profile?.id) return true;
+  if (readErr) return false;
+
+  const businessNameRaw = user.user_metadata?.business_name;
+  const businessName =
+    typeof businessNameRaw === "string" ? businessNameRaw.trim().slice(0, 200) : "";
+
+  const { error: upsertErr } = await supabase.from("profiles").upsert(
+    {
+      id: user.id,
+      business_name: businessName,
+      email: user.email ?? null,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "id" }
+  );
+
+  return !upsertErr;
+}
+
 export async function createProductAction(formData: FormData): Promise<InventoryActionResult> {
   const supabase = createClient();
   const user = await ensureUser(supabase);
   if (!user) return err("Please sign in again.");
+  const profileReady = await ensureProfileForUser(supabase, user);
+  if (!profileReady) {
+    return err("We couldn’t prepare your workspace. Please refresh and try again.");
+  }
 
   const nameRaw = formData.get("name");
   const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
@@ -175,6 +214,7 @@ export async function createProductAction(formData: FormData): Promise<Inventory
     .single();
 
   if (pErr || !product) {
+    console.error("[inventory:createProductAction] insert product failed", pErr);
     return err(
       "We couldn’t save the product. Check your entries and try again."
     );
