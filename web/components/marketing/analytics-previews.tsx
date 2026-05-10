@@ -1,5 +1,5 @@
 /**
- * Decorative analytics visuals — sample data only, theme-aware via currentColor.
+ * Landing-only wireframe visuals — no numeric claims; real dashboards use live data.
  */
 
 export function LandingAnalyticsShowcase() {
@@ -14,11 +14,11 @@ export function LandingAnalyticsShowcase() {
             id="analytics-preview-heading"
             className="text-3xl font-semibold tracking-tight sm:text-4xl"
           >
-            Numbers that stay honest
+            A clear view of operations
           </h2>
           <p className="mt-3 text-lg text-muted-foreground">
-            Illustrative views — your real dashboards fill in as orders flow from
-            chat into the system.
+            Layout preview only — your workspace will show real revenue, volume,
+            and pipeline mix once orders flow from WhatsApp into ChatLog.
           </p>
         </div>
 
@@ -29,20 +29,20 @@ export function LandingAnalyticsShowcase() {
                 <p className="text-sm font-medium text-muted-foreground">
                   Net revenue
                 </p>
-                <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-foreground">
-                  PKR 1.24M
+                <p className="mt-1 text-3xl font-semibold tracking-tight text-muted-foreground/80">
+                  —
                 </p>
               </div>
-              <span className="rounded-md border border-border bg-muted/50 px-2.5 py-1 text-xs font-medium text-foreground">
-                +18% vs prior month
+              <span className="rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                Your period
               </span>
             </div>
             <RevenueAreaChart
-              className="mt-8 h-36 w-full text-primary"
+              className="mt-8 h-36 w-full text-primary/50"
               gradientId="land-revenue-fill"
             />
             <p className="mt-4 text-xs text-muted-foreground">
-              Last twelve weeks · sample
+              Example curve — not live data
             </p>
           </div>
 
@@ -52,17 +52,17 @@ export function LandingAnalyticsShowcase() {
                 <p className="text-sm font-medium text-muted-foreground">
                   Orders by day
                 </p>
-                <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-foreground">
-                  847
+                <p className="mt-1 text-3xl font-semibold tracking-tight text-muted-foreground/80">
+                  —
                 </p>
               </div>
-              <span className="rounded-md border border-border bg-muted/50 px-2.5 py-1 text-xs font-medium text-foreground">
-                Peak · Friday
+              <span className="rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                Your week
               </span>
             </div>
-            <OrdersBarChart className="mt-8 h-36 w-full text-primary" />
+            <OrdersBarChart className="mt-8 h-36 w-full text-primary/45" />
             <p className="mt-4 text-xs text-muted-foreground">
-              Rolling week · sample
+              Example bars — not live data
             </p>
           </div>
 
@@ -72,39 +72,34 @@ export function LandingAnalyticsShowcase() {
                 Pipeline
               </p>
               <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
-                Status mix · sample week
+                Status mix
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Shown from your real order states once available
               </p>
             </div>
             <div className="mt-10 flex flex-1 flex-col items-center gap-8 sm:flex-row sm:justify-between lg:mt-0">
-              <PipelineDonut className="h-40 w-40 shrink-0 text-primary" />
+              <PipelineDonut className="h-40 w-40 shrink-0 text-primary/45" />
               <ul className="grid w-full max-w-sm grid-cols-2 gap-x-10 gap-y-3 text-sm sm:text-left">
-                <li className="flex items-center gap-2">
-                  <span className="size-2 shrink-0 rounded-full bg-primary" />
-                  <span className="text-muted-foreground">Confirmed</span>
-                  <span className="ml-auto font-medium tabular-nums text-foreground">
-                    42%
-                  </span>
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <span className="size-2 shrink-0 rounded-full bg-primary/50" />
+                  <span>Confirmed</span>
+                  <span className="ml-auto font-medium tabular-nums">—</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="size-2 shrink-0 rounded-full bg-chart-2" />
-                  <span className="text-muted-foreground">Dispatched</span>
-                  <span className="ml-auto font-medium tabular-nums text-foreground">
-                    31%
-                  </span>
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <span className="size-2 shrink-0 rounded-full bg-chart-2/60" />
+                  <span>Dispatched</span>
+                  <span className="ml-auto font-medium tabular-nums">—</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="size-2 shrink-0 rounded-full bg-chart-4" />
-                  <span className="text-muted-foreground">Delivered</span>
-                  <span className="ml-auto font-medium tabular-nums text-foreground">
-                    22%
-                  </span>
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <span className="size-2 shrink-0 rounded-full bg-chart-4/60" />
+                  <span>Delivered</span>
+                  <span className="ml-auto font-medium tabular-nums">—</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="size-2 shrink-0 rounded-full bg-muted-foreground/45" />
-                  <span className="text-muted-foreground">Returned</span>
-                  <span className="ml-auto font-medium tabular-nums text-foreground">
-                    5%
-                  </span>
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <span className="size-2 shrink-0 rounded-full bg-muted-foreground/35" />
+                  <span>Returned</span>
+                  <span className="ml-auto font-medium tabular-nums">—</span>
                 </li>
               </ul>
             </div>

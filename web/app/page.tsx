@@ -74,7 +74,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-5 sm:px-8">
+        <div className="mx-auto flex min-h-14 max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-2 sm:h-14 sm:flex-nowrap sm:px-8 sm:py-0">
           <Link href="/" className="flex items-center gap-2.5">
             <Image
               src="/logo.png"
@@ -88,7 +88,7 @@ export default function Home() {
               ChatLog
             </span>
           </Link>
-          <nav className="flex items-center gap-1">
+          <nav className="flex w-full items-center justify-end gap-1 sm:w-auto">
             <Link
               href="/auth/login"
               className={cn(
@@ -186,36 +186,22 @@ export default function Home() {
 
         <section className="border-b border-border/60 bg-muted/25">
           <div className="mx-auto max-w-6xl px-5 py-12 sm:px-8">
-            <p className="text-center text-sm font-medium text-muted-foreground">
-              Used by sellers across Pakistan, the UAE, and Saudi Arabia
+            <p className="text-center text-sm font-medium leading-relaxed text-muted-foreground">
+              ChatLog is early-stage software built for sellers who run serious
+              volume on WhatsApp. We are onboarding founding teams in Pakistan, the
+              Gulf, and Saudi Arabia — no inflated metrics, just a product roadmap
+              shaped with real businesses.
             </p>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-10 gap-y-4 text-center">
-              <div>
-                <p className="text-2xl font-semibold tabular-nums tracking-tight text-foreground sm:text-3xl">
-                  500+
-                </p>
-                <p className="mt-1 text-xs font-medium text-muted-foreground">
-                  Businesses
-                </p>
-              </div>
-              <div className="hidden h-8 w-px bg-border sm:block" aria-hidden />
-              <div>
-                <p className="text-2xl font-semibold tabular-nums tracking-tight text-foreground sm:text-3xl">
-                  10k+
-                </p>
-                <p className="mt-1 text-xs font-medium text-muted-foreground">
-                  Orders tracked
-                </p>
-              </div>
-              <div className="hidden h-8 w-px bg-border sm:block" aria-hidden />
-              <div>
-                <p className="text-2xl font-semibold tabular-nums tracking-tight text-foreground sm:text-3xl">
-                  98%
-                </p>
-                <p className="mt-1 text-xs font-medium text-muted-foreground">
-                  On-time delivery
-                </p>
-              </div>
+            <div className="mt-8 flex flex-col items-center justify-center gap-2 text-center sm:flex-row sm:gap-6">
+              <span className="rounded-full border border-border bg-background/80 px-4 py-2 text-xs font-medium text-foreground">
+                WhatsApp → structured orders
+              </span>
+              <span className="rounded-full border border-border bg-background/80 px-4 py-2 text-xs font-medium text-foreground">
+                Inventory and margin in one place
+              </span>
+              <span className="rounded-full border border-border bg-background/80 px-4 py-2 text-xs font-medium text-foreground">
+                Built for mobile-first teams
+              </span>
             </div>
           </div>
         </section>
@@ -293,7 +279,8 @@ export default function Home() {
                 Ready to stop losing orders in the scroll?
               </h2>
               <p className="mt-4 text-base leading-relaxed text-background/70 sm:text-lg">
-                Join teams who treat WhatsApp as a channel — not a filing cabinet.
+                If you sell on WhatsApp and want operations to keep pace, we would
+                like to hear from you.
               </p>
               <Link
                 href="/auth/signup"

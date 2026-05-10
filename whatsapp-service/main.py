@@ -1,10 +1,25 @@
 """ChatLog automation service. Run: uvicorn main:app --host 0.0.0.0 --port $PORT"""
 
-from fastapi import FastAPI, HTTPException
+import os
 
-from session_manager import get_manager
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from pydantic import BaseModel, Field
+
+from session_manager import get_manager, normalize_business_id
 
 app = FastAPI(title="ChatLog Service")
+
+
+def require_automation_secret(
+    x_chatlog_secret: str | None = Header(default=None, alias="X-ChatLog-Secret"),
+) -> None:
+    expected = os.environ.get("CHATLOG_AUTOMATION_SECRET", "").strip()
+    if not expected or not x_chatlog_secret or x_chatlog_secret != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class StartBody(BaseModel):
+    business_id: str = Field(..., min_length=32, max_length=64)
 
 
 @app.get("/health")
@@ -13,23 +28,63 @@ def health() -> dict[str, str]:
 
 
 @app.post("/whatsapp/session/start")
-def whatsapp_session_start() -> dict:
+def whatsapp_session_start(
+    body: StartBody,
+    _: None = Depends(require_automation_secret),
+) -> dict:
     """
-    Launch Chrome (if needed), open WhatsApp Web, reuse on-disk profile.
-    Returns whether a QR scan is likely required and whether a session looks logged in.
+    Launch Chrome for this business_id, open WhatsApp Web, reuse on-disk profile.
     """
     try:
-        get_manager().ensure_started()
+        bid = normalize_business_id(body.business_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid business_id") from exc
+
+    try:
+        get_manager(bid).ensure_started()
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Could not start browser session: {exc!s}",
         ) from exc
-    status = get_manager().get_status()
-    return {"ok": True, **status}
+    status = get_manager(bid).get_status()
+    return {"ok": True, "business_id": bid, **status}
 
 
 @app.get("/whatsapp/session/status")
-def whatsapp_session_status() -> dict:
-    """Current session state without starting a new browser."""
-    return get_manager().get_status()
+def whatsapp_session_status(
+    business_id: str = Query(..., min_length=32, max_length=64),
+    _: None = Depends(require_automation_secret),
+) -> dict:
+    try:
+        bid = normalize_business_id(business_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid business_id") from exc
+
+    return {"ok": True, "business_id": bid, **get_manager(bid).get_status()}
+
+
+@app.get("/whatsapp/session/qr")
+def whatsapp_session_qr(
+    business_id: str = Query(..., min_length=32, max_length=64),
+    _: None = Depends(require_automation_secret),
+) -> Response:
+    """PNG of the QR canvas when the session is waiting for scan (may be empty)."""
+    try:
+        bid = normalize_business_id(business_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid business_id") from exc
+
+    mgr = get_manager(bid)
+    try:
+        mgr.ensure_started()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not start browser session: {exc!s}",
+        ) from exc
+
+    png = mgr.get_qr_png()
+    if not png:
+        raise HTTPException(status_code=404, detail="QR not available")
+    return Response(content=png, media_type="image/png")

@@ -9,3 +9,6 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    # Add in Render dashboard (do not commit values):
+    # CHATLOG_AUTOMATION_SECRET — shared with Vercel CHATLOG_AUTOMATION_SECRET
+    # WHATSAPP_SESSION_DIR — persistent disk path for Chrome profiles (recommended)
