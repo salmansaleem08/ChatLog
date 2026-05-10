@@ -151,7 +151,12 @@ export function SignUpView() {
               </p>
             </div>
 
-            <form className="flex flex-col gap-5" noValidate onSubmit={onSubmit}>
+            <form
+              className="flex flex-col gap-5"
+              method="post"
+              noValidate
+              onSubmit={onSubmit}
+            >
               <div className="space-y-2">
                 <Label htmlFor="business-name">Business name</Label>
                 <Input

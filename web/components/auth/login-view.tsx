@@ -88,7 +88,12 @@ export function LoginView({ nextPath }: { nextPath: string }) {
               </p>
             </div>
 
-            <form className="flex flex-col gap-5" noValidate onSubmit={onSubmit}>
+            <form
+              className="flex flex-col gap-5"
+              method="post"
+              noValidate
+              onSubmit={onSubmit}
+            >
               <div className="space-y-2">
                 <Label htmlFor="login-email">Email</Label>
                 <Input
