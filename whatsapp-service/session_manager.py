@@ -306,19 +306,33 @@ class WhatsAppSessionManager:
                 )
                 raise RuntimeError("chat_list_timeout") from exc
 
+            try:
+                driver.set_window_size(1400, 900)
+            except Exception:
+                pass
+
+            # Rows often appear a moment after the chat-list shell mounts.
+            try:
+                WebDriverWait(driver, 25).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, '#pane-side a[href*="/chat/"]')
+                    )
+                )
+            except Exception:
+                log.info(
+                    "list_chats no_chat_links_yet business_id=%s (will still scrape)",
+                    self._business_id,
+                )
+
             aggregated: Dict[str, Dict[str, Any]] = {}
             for _round in range(max(1, scroll_rounds)):
                 self._capture_chat_rows(driver, aggregated)
-                try:
-                    side = driver.find_element(By.CSS_SELECTOR, "#pane-side")
-                    driver.execute_script(
-                        "arguments[0].scrollTop = arguments[0].scrollHeight;", side
-                    )
-                except Exception:
-                    driver.execute_script("window.scrollBy(0, 600)")
-                time.sleep(0.18)
+                self._capture_chat_rows_from_pane_links(driver, aggregated)
+                self._scroll_chat_pane_to_end(driver)
+                time.sleep(0.22)
 
             self._capture_chat_rows(driver, aggregated)
+            self._capture_chat_rows_from_pane_links(driver, aggregated)
 
             chats: List[Dict[str, Any]] = list(aggregated.values())
 
@@ -327,6 +341,8 @@ class WhatsAppSessionManager:
                 return int(ms)
 
             chats.sort(key=_sort_key, reverse=True)
+            if not chats:
+                self._log_list_chats_empty_diagnostics(driver)
             log.info(
                 "list_chats ok business_id=%s count=%s",
                 self._business_id,
@@ -350,13 +366,93 @@ class WhatsAppSessionManager:
         except Exception:
             return None
 
+    @staticmethod
+    def _scroll_chat_pane_to_end(driver: webdriver.Chrome) -> None:
+        """WhatsApp nests the scrollable list; scrolling #pane-side alone often does nothing."""
+        try:
+            driver.execute_script(
+                """
+                const pane = document.querySelector('#pane-side');
+                if (!pane) { window.scrollBy(0, 800); return; }
+                let best = pane;
+                let bestScore = 0;
+                const nodes = pane.querySelectorAll('div');
+                for (let i = 0; i < nodes.length; i++) {
+                    const n = nodes[i];
+                    const sh = n.scrollHeight;
+                    const ch = n.clientHeight;
+                    if (sh > ch + 80 && sh > bestScore) {
+                        bestScore = sh;
+                        best = n;
+                    }
+                }
+                best.scrollTop = best.scrollHeight;
+                """
+            )
+        except Exception:
+            try:
+                driver.execute_script("window.scrollBy(0, 800)")
+            except Exception:
+                pass
+
+    def _log_list_chats_empty_diagnostics(self, driver: webdriver.Chrome) -> None:
+        """Paste-friendly line when logged in but no rows parsed."""
+        try:
+            cells = len(
+                driver.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-container"]'
+                )
+            )
+        except Exception:
+            cells = -1
+        try:
+            pane_links = len(
+                driver.find_elements(
+                    By.CSS_SELECTOR, '#pane-side a[href*="/chat/"]'
+                )
+            )
+        except Exception:
+            pane_links = -1
+        try:
+            any_chat_links = len(
+                driver.find_elements(By.CSS_SELECTOR, 'a[href*="/chat/"]')
+            )
+        except Exception:
+            any_chat_links = -1
+        try:
+            url = str(driver.current_url or "")[:160]
+        except Exception:
+            url = "(url_unavailable)"
+        log.warning(
+            "list_chats_empty business_id=%s url=%s cell_frame_containers=%s "
+            "pane_side_chat_links=%s any_chat_links=%s",
+            self._business_id,
+            url,
+            cells,
+            pane_links,
+            any_chat_links,
+        )
+
     def _capture_chat_rows(
         self, driver: webdriver.Chrome, out: Dict[str, Dict[str, Any]]
     ) -> None:
-        rows = driver.find_elements(
-            By.CSS_SELECTOR,
+        row_selectors = (
             '[data-testid="cell-frame-container"]',
+            '[data-testid="cell-frame"]',
+            '#pane-side [role="row"]',
         )
+        rows: List[Any] = []
+        seen_el: set[int] = set()
+        for sel in row_selectors:
+            for row in driver.find_elements(By.CSS_SELECTOR, sel):
+                try:
+                    rid = id(row)
+                except Exception:
+                    continue
+                if rid in seen_el:
+                    continue
+                seen_el.add(rid)
+                rows.append(row)
         for row in rows:
             try:
                 link_el = None
@@ -402,6 +498,98 @@ class WhatsAppSessionManager:
                 }
             except Exception:
                 continue
+
+    def _capture_chat_rows_from_pane_links(
+        self, driver: webdriver.Chrome, out: Dict[str, Dict[str, Any]]
+    ) -> None:
+        """Fallback when cell-frame testids change but chat deep links still exist."""
+        roots = driver.find_elements(By.CSS_SELECTOR, "#pane-side")
+        if not roots:
+            roots = driver.find_elements(By.CSS_SELECTOR, '[data-testid="chat-list"]')
+        if not roots:
+            return
+        root = roots[0]
+        try:
+            links = root.find_elements(By.CSS_SELECTOR, 'a[href*="/chat/"]')
+        except Exception:
+            return
+        for link in links:
+            try:
+                href = (link.get_attribute("href") or "").strip()
+                jid = self._jid_from_chat_href(href)
+                if not jid or jid.endswith("@g.us"):
+                    continue
+                if jid in out:
+                    continue
+                container = link.find_elements(
+                    By.XPATH,
+                    './ancestor::div[@data-testid="cell-frame-container"][1]',
+                )
+                if container:
+                    self._merge_row_from_container(container[0], jid, out)
+                    if jid in out:
+                        continue
+                digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
+                aria = (link.get_attribute("aria-label") or "").strip()
+                title_attr = (link.get_attribute("title") or "").strip()
+                text_bits = (link.text or "").strip()
+                display_name = (
+                    (aria or title_attr or text_bits).split("\n")[0].strip()
+                    or ("+" + digits if digits else "Contact")
+                )
+                out[jid] = {
+                    "chat_jid": jid,
+                    "phone_digits": digits,
+                    "display_name": display_name[:200],
+                    "last_message_preview": "",
+                    "last_message_at_ms": 0,
+                }
+            except Exception:
+                continue
+
+    def _merge_row_from_container(
+        self,
+        row: Any,
+        jid: str,
+        out: Dict[str, Dict[str, Any]],
+    ) -> None:
+        try:
+            title_el = row.find_elements(
+                By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'
+            )
+            name = ""
+            if title_el:
+                name = (title_el[0].text or "").strip()
+
+            prev_el = row.find_elements(
+                By.CSS_SELECTOR, '[data-testid="last-msg-status"]'
+            )
+            preview = ""
+            if prev_el:
+                preview = (prev_el[0].text or "").strip()
+
+            meta_el = row.find_elements(
+                By.CSS_SELECTOR, '[data-testid="cell-frame-meta"]'
+            )
+            meta_text = ""
+            meta_title_attr = ""
+            if meta_el:
+                meta_text = (meta_el[0].text or "").strip()
+                meta_title_attr = (meta_el[0].get_attribute("title") or "").strip()
+
+            last_ms = self._parse_sidebar_time(meta_text, meta_title_attr)
+            digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
+            display_name = name or ("+" + digits if digits else "Contact")
+
+            out[jid] = {
+                "chat_jid": jid,
+                "phone_digits": digits,
+                "display_name": display_name,
+                "last_message_preview": preview,
+                "last_message_at_ms": last_ms or 0,
+            }
+        except Exception:
+            pass
 
     @staticmethod
     def _parse_sidebar_time(label: str, title_attr: str) -> Optional[int]:
