@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { interpretChatThread } from "@/lib/chat-analyze-client";
 import { cn } from "@/lib/utils";
 import type { WhatsappLinkStatus } from "@/lib/whatsapp-profile-sync";
 
@@ -165,17 +166,11 @@ export function ChatsClient({
       setAnalyzeRowError(null);
       setError(null);
       try {
-        const res = await fetch(
-          `/api/whatsapp/chat-threads/${threadId}/analyze`,
-          { method: "POST" }
-        );
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        if (!res.ok) {
+        const result = await interpretChatThread(threadId);
+        if (!result.ok) {
           setAnalyzeRowError({
             threadId,
-            message:
-              body.error ??
-              "We couldn’t finish interpreting this thread. Try again shortly.",
+            message: result.message,
           });
           return;
         }

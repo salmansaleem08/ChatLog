@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { interpretChatThread } from "@/lib/chat-analyze-client";
 import { formatMoneyAmount } from "@/lib/inventory/money-format";
 import { toNumber } from "@/lib/inventory/helpers";
 import { cn } from "@/lib/utils";
@@ -164,10 +165,11 @@ export function ChatDetailClient({
         { method: "GET" }
       );
       const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
         error?: string;
         messages?: ChatBubbleVm[];
       };
-      if (!res.ok) {
+      if (!res.ok || body.ok !== true) {
         setConvError(
           body.error ??
             "We couldn’t load this conversation. Try again in a moment."
@@ -216,15 +218,9 @@ export function ChatDetailClient({
     setBusyAction("analyze");
     setAnalyzeError(null);
     try {
-      const res = await fetch(`/api/whatsapp/chat-threads/${threadId}/analyze`, {
-        method: "POST",
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) {
-        setAnalyzeError(
-          body.error ??
-            "We couldn’t finish interpreting this thread. Try again shortly."
-        );
+      const result = await interpretChatThread(threadId);
+      if (!result.ok) {
+        setAnalyzeError(result.message);
         return;
       }
       router.refresh();

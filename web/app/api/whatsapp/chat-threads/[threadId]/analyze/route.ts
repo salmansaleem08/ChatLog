@@ -1,10 +1,5 @@
 import { NextResponse } from "next/server";
 
-import {
-  automationConfigured,
-  automationFetchLong,
-  describeAutomationReachabilityError,
-} from "@/lib/chatlog-automation";
 import { loadInventoryCatalogVariants } from "@/lib/inventory/catalogue-loader";
 import { toNumber } from "@/lib/inventory/helpers";
 import { formatMoneyAmount } from "@/lib/inventory/money-format";
@@ -20,116 +15,190 @@ import {
   type ExtractionLineRow,
 } from "@/lib/whatsapp-extraction-stock";
 
-export const maxDuration = 300;
+/**
+ * Stay within Vercel Hobby / typical free-tier ~60s execution: this route only
+ * runs AI + DB. The client loads messages in a separate request first.
+ */
+export const maxDuration = 60;
+
+const MAX_TRANSCRIPT_CHARS = 600_000;
+
+type AnalyzeBody = {
+  transcript?: unknown;
+  latestMessageIso?: unknown;
+};
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: { threadId: string } }
 ) {
   const threadId = params.threadId?.trim();
   if (!threadId) {
-    return NextResponse.json({ error: "Missing chat." }, { status: 400 });
+    console.error("[analyze] step=validate_thread_param missing_thread_id");
+    return NextResponse.json(
+      { ok: false as const, error: "Missing chat." },
+      { status: 400 }
+    );
+  }
+
+  let body: AnalyzeBody;
+  try {
+    body = (await request.json()) as AnalyzeBody;
+  } catch (e) {
+    console.error("[analyze] step=parse_json_body", {
+      threadId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return NextResponse.json(
+      { ok: false as const, error: "Invalid request." },
+      { status: 400 }
+    );
+  }
+
+  const transcriptRaw =
+    typeof body.transcript === "string" ? body.transcript.trim() : "";
+  const latestIsoRaw =
+    typeof body.latestMessageIso === "string"
+      ? body.latestMessageIso.trim()
+      : "";
+
+  if (!transcriptRaw) {
+    console.error("[analyze] step=validate_body missing_transcript", {
+      threadId,
+      hadTranscriptKey: "transcript" in body,
+    });
+    return NextResponse.json(
+      {
+        ok: false as const,
+        error:
+          "No conversation text was sent. Refresh this page and try Analyze again.",
+      },
+      { status: 400 }
+    );
+  }
+
+  if (transcriptRaw.length > MAX_TRANSCRIPT_CHARS) {
+    console.error("[analyze] step=validate_body transcript_too_large", {
+      threadId,
+      length: transcriptRaw.length,
+    });
+    return NextResponse.json(
+      {
+        ok: false as const,
+        error: "This conversation is too long to process in one step.",
+      },
+      { status: 413 }
+    );
   }
 
   const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  if (!automationConfigured()) {
-    return NextResponse.json(
-      {
-        error: "This feature isn’t available right now. Please try again later.",
-      },
-      { status: 503 }
-    );
-  }
-
-  const { data: thread, error: threadErr } = await supabase
-    .from("whatsapp_chat_threads")
-    .select(
-      "id, business_id, wa_chat_jid, last_analyzed_at, extraction_watermark_at, last_message_at"
-    )
-    .eq("id", threadId)
-    .eq("business_id", user.id)
-    .maybeSingle();
-
-  if (threadErr || !thread) {
-    return NextResponse.json(
-      { error: "That conversation could not be found." },
-      { status: 404 }
-    );
-  }
-
-  let msgPayload: Record<string, unknown>;
+  let userId: string | undefined;
 
   try {
-    const qs = new URLSearchParams({
-      business_id: user.id,
-      chat_jid: String(thread.wa_chat_jid),
-    }).toString();
-    const mr = await automationFetchLong(`/whatsapp/chat/messages?${qs}`, {
-      method: "GET",
-    });
+    const {
+      data: { user },
+      error: authErr,
+    } = await supabase.auth.getUser();
 
-    msgPayload = (await mr.json().catch(() => ({}))) as Record<string, unknown>;
-
-    if (!mr.ok) {
-      const detail =
-        typeof msgPayload.detail === "string"
-          ? msgPayload.detail
-          : JSON.stringify(msgPayload.detail ?? msgPayload ?? {});
-      const dev =
-        process.env.NODE_ENV === "development"
-          ? { detail }
-          : ({} as Record<string, unknown>);
+    if (authErr) {
+      console.error("[analyze] step=auth_getUser", {
+        threadId,
+        message: authErr.message,
+        code: authErr.status,
+      });
       return NextResponse.json(
-        {
-          error: "We couldn’t read this conversation. Try again in a minute.",
-          ...dev,
-        },
-        { status: mr.status >= 400 && mr.status < 600 ? mr.status : 502 }
+        { ok: false as const, error: "Unauthorized" },
+        { status: 401 }
       );
     }
+    if (!user) {
+      console.error("[analyze] step=auth_getUser no_user", { threadId });
+      return NextResponse.json(
+        { ok: false as const, error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+    userId = user.id;
   } catch (e) {
-    if (e instanceof Error && e.name === "AbortError") {
-      return NextResponse.json(
-        {
-          error:
-            "Opening this chat took too long. Make sure this workspace is connected on your phone, then try again.",
-        },
-        { status: 504 }
-      );
-    }
-    console.error("[analyze] message fetch", e);
+    console.error("[analyze] step=auth_getUser_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
-      {
-        error: describeAutomationReachabilityError(e),
-      },
-      { status: 502 }
+      { ok: false as const, error: "Unauthorized" },
+      { status: 401 }
     );
   }
 
-  const transcript = String(msgPayload.transcript ?? "").trim();
-  const latestIsoRaw = String(msgPayload.latest_message_iso ?? "").trim();
+  let thread: {
+    id: string;
+    last_analyzed_at: string | null;
+    extraction_watermark_at: string | null;
+    last_message_at: string | null;
+  } | null = null;
+
+  try {
+    const { data: row, error: threadErr } = await supabase
+      .from("whatsapp_chat_threads")
+      .select(
+        "id, business_id, last_analyzed_at, extraction_watermark_at, last_message_at"
+      )
+      .eq("id", threadId)
+      .eq("business_id", userId!)
+      .maybeSingle();
+
+    if (threadErr) {
+      console.error("[analyze] step=load_thread", {
+        threadId,
+        userId,
+        message: threadErr.message,
+        code: threadErr.code,
+        details: threadErr.details,
+      });
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: "That conversation could not be found.",
+        },
+        { status: 404 }
+      );
+    }
+    if (!row) {
+      console.error("[analyze] step=load_thread not_found", { threadId, userId });
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: "That conversation could not be found.",
+        },
+        { status: 404 }
+      );
+    }
+    thread = row;
+  } catch (e) {
+    console.error("[analyze] step=load_thread_throw", {
+      threadId,
+      userId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
+    return NextResponse.json(
+      { ok: false as const, error: "That conversation could not be found." },
+      { status: 500 }
+    );
+  }
+
+  const transcript = transcriptRaw;
   const latestMs = Date.parse(latestIsoRaw);
 
-  if (!transcript) {
-    return NextResponse.json(
-      {
-        error:
-          "This chat has no readable messages yet. Try again after someone sends a message.",
-      },
-      { status: 422 }
-    );
+  if (!Number.isFinite(latestMs)) {
+    console.warn("[analyze] step=watermark invalid_latest_iso", {
+      threadId,
+      latestIsoPreview: latestIsoRaw.slice(0, 80),
+    });
   }
 
-  const analysedBefore = Boolean(thread.last_analyzed_at);
-  const watermarkMs = thread.extraction_watermark_at
-    ? Date.parse(String(thread.extraction_watermark_at))
+  const analysedBefore = Boolean(thread!.last_analyzed_at);
+  const watermarkMs = thread!.extraction_watermark_at
+    ? Date.parse(String(thread!.extraction_watermark_at))
     : NaN;
 
   if (
@@ -138,8 +207,10 @@ export async function POST(
     Number.isFinite(latestMs) &&
     latestMs <= watermarkMs
   ) {
+    console.info("[analyze] step=skip_up_to_date", { threadId });
     return NextResponse.json(
       {
+        ok: false as const,
         error:
           "Everything is already up to date for this thread. When a new message arrives, you can run another interpretation.",
       },
@@ -149,10 +220,16 @@ export async function POST(
 
   let catalogue;
   try {
-    catalogue = await loadInventoryCatalogVariants(supabase, user.id);
-  } catch {
+    catalogue = await loadInventoryCatalogVariants(supabase, userId!);
+  } catch (e) {
+    console.error("[analyze] step=load_catalogue", {
+      threadId,
+      userId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
       {
+        ok: false as const,
         error:
           "Add at least one product in Inventory before interpreting orders from conversations.",
       },
@@ -161,8 +238,10 @@ export async function POST(
   }
 
   if (catalogue.length < 1) {
+    console.error("[analyze] step=load_catalogue empty", { threadId, userId });
     return NextResponse.json(
       {
+        ok: false as const,
         error:
           "Add at least one product in Inventory before interpreting orders from conversations.",
       },
@@ -182,9 +261,14 @@ export async function POST(
       catalogueJson,
     });
   } catch (e) {
-    console.error("[analyze] AI extraction failed", e);
+    console.error("[analyze] step=ai_extract", {
+      threadId,
+      userId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
       {
+        ok: false as const,
         error:
           "We couldn’t interpret this conversation right now. Try again in a few minutes.",
       },
@@ -197,16 +281,16 @@ export async function POST(
     ? new Date(latestMs).toISOString()
     : nowIso;
 
-  const prevMsgMs = thread.last_message_at
-    ? Date.parse(String(thread.last_message_at))
+  const prevMsgMs = thread!.last_message_at
+    ? Date.parse(String(thread!.last_message_at))
     : NaN;
   const mergedLastMessageIso =
     Number.isFinite(prevMsgMs) && Number.isFinite(latestMs)
       ? new Date(Math.max(prevMsgMs, latestMs)).toISOString()
       : Number.isFinite(latestMs)
         ? mergedLatestIso
-        : thread.last_message_at
-          ? String(thread.last_message_at)
+        : thread!.last_message_at
+          ? String(thread!.last_message_at)
           : mergedLatestIso;
 
   const insertRows: Record<string, unknown>[] = [];
@@ -260,8 +344,8 @@ export async function POST(
     }
 
     insertRows.push({
-      business_id: user.id,
-      chat_thread_id: thread.id,
+      business_id: userId,
+      chat_thread_id: thread!.id,
       product_id: unresolved ? null : productId,
       product_variant_id: unresolved ? null : vid,
       quantity: qty,
@@ -277,101 +361,223 @@ export async function POST(
     });
   }
 
-  const { data: priorLines, error: priorErr } = await supabase
-    .from("whatsapp_extracted_order_lines")
-    .select(
-      "id, product_variant_id, unresolved, quantity, stock_units_applied"
-    )
-    .eq("chat_thread_id", thread.id)
-    .eq("business_id", user.id);
+  let priorLines: ExtractionLineRow[] = [];
+  try {
+    const { data: priorRows, error: priorErr } = await supabase
+      .from("whatsapp_extracted_order_lines")
+      .select(
+        "id, product_variant_id, unresolved, quantity, stock_units_applied"
+      )
+      .eq("chat_thread_id", thread!.id)
+      .eq("business_id", userId!);
 
-  if (priorErr) {
-    console.error("[analyze] load prior lines", priorErr);
+    if (priorErr) {
+      console.error("[analyze] step=load_prior_lines", {
+        threadId,
+        message: priorErr.message,
+        code: priorErr.code,
+      });
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: "We couldn’t update this interpretation. Try again.",
+        },
+        { status: 500 }
+      );
+    }
+    priorLines = (priorRows ?? []) as unknown as ExtractionLineRow[];
+  } catch (e) {
+    console.error("[analyze] step=load_prior_lines_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
-      { error: "We couldn’t update this interpretation. Try again." },
+      {
+        ok: false as const,
+        error: "We couldn’t update this interpretation. Try again.",
+      },
       { status: 500 }
     );
   }
 
-  const typedPrior = (priorLines ?? []) as unknown as ExtractionLineRow[];
-  const restoreOld = await restoreInventoryForExtractionLines(
-    supabase,
-    typedPrior,
-    REASON_RESTORE_BEFORE_REPLACE
-  );
-  if (restoreOld.error) {
-    return NextResponse.json({ error: restoreOld.error }, { status: 422 });
+  try {
+    const restoreOld = await restoreInventoryForExtractionLines(
+      supabase,
+      priorLines,
+      REASON_RESTORE_BEFORE_REPLACE
+    );
+    if (restoreOld.error) {
+      console.error("[analyze] step=restore_inventory_prior", {
+        threadId,
+        message: restoreOld.error,
+      });
+      return NextResponse.json(
+        { ok: false as const, error: restoreOld.error },
+        { status: 422 }
+      );
+    }
+  } catch (e) {
+    console.error("[analyze] step=restore_inventory_prior_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
+    return NextResponse.json(
+      {
+        ok: false as const,
+        error: "We couldn’t update inventory for this thread. Try again.",
+      },
+      { status: 500 }
+    );
   }
 
-  const { error: delErr } = await supabase
-    .from("whatsapp_extracted_order_lines")
-    .delete()
-    .eq("chat_thread_id", thread.id)
-    .eq("business_id", user.id);
+  try {
+    const { error: delErr } = await supabase
+      .from("whatsapp_extracted_order_lines")
+      .delete()
+      .eq("chat_thread_id", thread!.id)
+      .eq("business_id", userId!);
 
-  if (delErr) {
-    console.error("[analyze] delete prior lines", delErr);
+    if (delErr) {
+      console.error("[analyze] step=delete_prior_lines", {
+        threadId,
+        message: delErr.message,
+        code: delErr.code,
+      });
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: "We couldn’t save the interpretation. Try again.",
+        },
+        { status: 500 }
+      );
+    }
+  } catch (e) {
+    console.error("[analyze] step=delete_prior_lines_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
-      { error: "We couldn’t save the interpretation. Try again." },
+      {
+        ok: false as const,
+        error: "We couldn’t save the interpretation. Try again.",
+      },
       { status: 500 }
     );
   }
 
   if (insertRows.length > 0) {
-    const { data: inserted, error: insErr } = await supabase
-      .from("whatsapp_extracted_order_lines")
-      .insert(insertRows)
-      .select("id, product_variant_id, unresolved, quantity");
+    try {
+      const { data: inserted, error: insErr } = await supabase
+        .from("whatsapp_extracted_order_lines")
+        .insert(insertRows)
+        .select("id, product_variant_id, unresolved, quantity");
 
-    if (insErr || !inserted) {
-      console.error("[analyze] insert lines", insErr);
+      if (insErr || !inserted) {
+        console.error("[analyze] step=insert_lines", {
+          threadId,
+          message: insErr?.message,
+          code: insErr?.code,
+        });
+        return NextResponse.json(
+          {
+            ok: false as const,
+            error: "We couldn’t save the interpretation. Try again.",
+          },
+          { status: 500 }
+        );
+      }
+
+      const rowsForStock = inserted as {
+        id: string;
+        product_variant_id: string | null;
+        unresolved: boolean;
+        quantity: unknown;
+      }[];
+
+      const inv = await applyInventoryForInsertedLines(supabase, rowsForStock);
+      if (inv.error) {
+        console.error("[analyze] step=apply_inventory", {
+          threadId,
+          message: inv.error,
+        });
+        const { error: rmErr } = await supabase
+          .from("whatsapp_extracted_order_lines")
+          .delete()
+          .eq("chat_thread_id", thread!.id)
+          .eq("business_id", userId!);
+        if (rmErr) {
+          console.error("[analyze] step=cleanup_lines_after_inventory_failure", {
+            threadId,
+            message: rmErr.message,
+          });
+        }
+        return NextResponse.json(
+          { ok: false as const, error: inv.error },
+          { status: 422 }
+        );
+      }
+    } catch (e) {
+      console.error("[analyze] step=insert_or_inventory_throw", {
+        threadId,
+        err: e instanceof Error ? e.stack ?? e.message : String(e),
+      });
       return NextResponse.json(
-        { error: "We couldn’t save the interpretation. Try again." },
+        {
+          ok: false as const,
+          error: "We couldn’t save the interpretation. Try again.",
+        },
         { status: 500 }
       );
     }
-
-    const rowsForStock = inserted as {
-      id: string;
-      product_variant_id: string | null;
-      unresolved: boolean;
-      quantity: unknown;
-    }[];
-
-    const inv = await applyInventoryForInsertedLines(supabase, rowsForStock);
-    if (inv.error) {
-      const { error: rmErr } = await supabase
-        .from("whatsapp_extracted_order_lines")
-        .delete()
-        .eq("chat_thread_id", thread.id)
-        .eq("business_id", user.id);
-      if (rmErr) {
-        console.error("[analyze] cleanup lines after inventory failure", rmErr);
-      }
-      return NextResponse.json({ error: inv.error }, { status: 422 });
-    }
   }
 
-  const { error: upThreadErr } = await supabase
-    .from("whatsapp_chat_threads")
-    .update({
-      last_analyzed_at: nowIso,
-      extraction_watermark_at: mergedLatestIso,
-      last_message_at: mergedLastMessageIso,
-    })
-    .eq("id", thread.id)
-    .eq("business_id", user.id);
+  try {
+    const { error: upThreadErr } = await supabase
+      .from("whatsapp_chat_threads")
+      .update({
+        last_analyzed_at: nowIso,
+        extraction_watermark_at: mergedLatestIso,
+        last_message_at: mergedLastMessageIso,
+      })
+      .eq("id", thread!.id)
+      .eq("business_id", userId!);
 
-  if (upThreadErr) {
-    console.error("[analyze] update thread", upThreadErr);
+    if (upThreadErr) {
+      console.error("[analyze] step=update_thread", {
+        threadId,
+        message: upThreadErr.message,
+        code: upThreadErr.code,
+      });
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: "We couldn’t save this thread’s status. Try again.",
+        },
+        { status: 500 }
+      );
+    }
+  } catch (e) {
+    console.error("[analyze] step=update_thread_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
-      { error: "We couldn’t save this thread’s status. Try again." },
+      {
+        ok: false as const,
+        error: "We couldn’t save this thread’s status. Try again.",
+      },
       { status: 500 }
     );
   }
 
+  console.info("[analyze] step=done_ok", {
+    threadId,
+    userId,
+    lineCount: insertRows.length,
+  });
+
   return NextResponse.json({
-    ok: true,
+    ok: true as const,
     analyzedAt: nowIso,
     lineCount: insertRows.length,
     latestMessageAt: mergedLatestIso,

@@ -3,11 +3,13 @@ import { NextResponse } from "next/server";
 import {
   automationConfigured,
   automationFetchLong,
+  AUTOMATION_FETCH_VERCEL_SAFE_MS,
   describeAutomationReachabilityError,
 } from "@/lib/chatlog-automation";
 import { createClient } from "@/lib/supabase/server";
 
-export const maxDuration = 300;
+/** Loads WhatsApp snapshot only — stays within typical ~60s platform caps. */
+export const maxDuration = 60;
 
 type ChatMessageVm = {
   role: "customer" | "business";
@@ -21,58 +23,132 @@ export async function GET(
 ) {
   const threadId = params.threadId?.trim();
   if (!threadId) {
-    return NextResponse.json({ error: "Missing chat." }, { status: 400 });
+    console.error("[chat_messages] step=thread_param missing");
+    return NextResponse.json({ error: "Missing chat.", ok: false }, { status: 400 });
   }
 
   const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let userId: string | undefined;
+
+  try {
+    const {
+      data: { user },
+      error: authErr,
+    } = await supabase.auth.getUser();
+
+    if (authErr || !user) {
+      console.error("[chat_messages] step=auth", {
+        threadId,
+        message: authErr?.message,
+      });
+      return NextResponse.json(
+        { error: "Unauthorized", ok: false },
+        { status: 401 }
+      );
+    }
+    userId = user.id;
+  } catch (e) {
+    console.error("[chat_messages] step=auth_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
+    return NextResponse.json({ error: "Unauthorized", ok: false }, { status: 401 });
   }
 
   if (!automationConfigured()) {
+    console.error("[chat_messages] step=config automation_not_configured", {
+      threadId,
+    });
     return NextResponse.json(
       {
         error: "This feature isn’t available right now. Please try again later.",
+        ok: false,
       },
       { status: 503 }
     );
   }
 
-  const { data: thread, error: threadErr } = await supabase
-    .from("whatsapp_chat_threads")
-    .select("wa_chat_jid")
-    .eq("id", threadId)
-    .eq("business_id", user.id)
-    .maybeSingle();
+  let waChatJid: string;
+  try {
+    const { data: thread, error: threadErr } = await supabase
+      .from("whatsapp_chat_threads")
+      .select("wa_chat_jid")
+      .eq("id", threadId)
+      .eq("business_id", userId!)
+      .maybeSingle();
 
-  if (threadErr || !thread) {
+    if (threadErr || !thread) {
+      console.error("[chat_messages] step=load_thread", {
+        threadId,
+        userId,
+        message: threadErr?.message,
+      });
+      return NextResponse.json(
+        { error: "That conversation could not be found.", ok: false },
+        { status: 404 }
+      );
+    }
+    waChatJid = String(thread.wa_chat_jid);
+  } catch (e) {
+    console.error("[chat_messages] step=load_thread_throw", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
-      { error: "That conversation could not be found." },
-      { status: 404 }
+      { error: "That conversation could not be found.", ok: false },
+      { status: 500 }
     );
   }
 
   try {
     const qs = new URLSearchParams({
-      business_id: user.id,
-      chat_jid: String(thread.wa_chat_jid),
+      business_id: userId!,
+      chat_jid: waChatJid,
     }).toString();
-    const res = await automationFetchLong(`/whatsapp/chat/messages?${qs}`, {
-      method: "GET",
+
+    console.info("[chat_messages] step=automation_fetch_start", {
+      threadId,
+      timeoutMs: AUTOMATION_FETCH_VERCEL_SAFE_MS,
     });
 
-    const body = (await res.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const res = await automationFetchLong(
+      `/whatsapp/chat/messages?${qs}`,
+      { method: "GET" },
+      AUTOMATION_FETCH_VERCEL_SAFE_MS
+    );
 
-    if (!res.ok) {
+    let body: Record<string, unknown>;
+    try {
+      body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    } catch (e) {
+      console.error("[chat_messages] step=parse_automation_json", {
+        threadId,
+        status: res.status,
+        err: e instanceof Error ? e.message : String(e),
+      });
       return NextResponse.json(
         {
           error: "We couldn’t load messages for this conversation. Try again shortly.",
+          ok: false,
+        },
+        { status: 502 }
+      );
+    }
+
+    if (!res.ok) {
+      const detail =
+        typeof body.detail === "string"
+          ? body.detail
+          : JSON.stringify(body.detail ?? body);
+      console.error("[chat_messages] step=automation_upstream_error", {
+        threadId,
+        httpStatus: res.status,
+        detail: detail.slice(0, 400),
+      });
+      return NextResponse.json(
+        {
+          error: "We couldn’t load messages for this conversation. Try again shortly.",
+          ok: false,
         },
         { status: res.status >= 400 && res.status < 600 ? res.status : 502 }
       );
@@ -108,30 +184,49 @@ export async function GET(
       });
     }
 
+    const transcript =
+      typeof body.transcript === "string" ? body.transcript.trim() : "";
+
     const latestRaw = String(body.latest_message_iso ?? "").trim();
     const latestIso =
       latestRaw && !Number.isNaN(Date.parse(latestRaw))
         ? new Date(Date.parse(latestRaw)).toISOString()
         : null;
 
+    console.info("[chat_messages] step=done_ok", {
+      threadId,
+      messageCount: messages.length,
+      transcriptChars: transcript.length,
+      hasLatestIso: Boolean(latestIso),
+    });
+
     return NextResponse.json({
       ok: true,
       messages,
+      transcript,
       latestMessageIso: latestIso,
     });
   } catch (e) {
     if (e instanceof Error && e.name === "AbortError") {
+      console.error("[chat_messages] step=automation_abort_timeout", {
+        threadId,
+        timeoutMs: AUTOMATION_FETCH_VERCEL_SAFE_MS,
+      });
       return NextResponse.json(
         {
           error:
             "Loading the conversation took too long. Try again in a moment.",
+          ok: false,
         },
         { status: 504 }
       );
     }
-    console.error("[chat messages]", e);
+    console.error("[chat_messages] step=unexpected", {
+      threadId,
+      err: e instanceof Error ? e.stack ?? e.message : String(e),
+    });
     return NextResponse.json(
-      { error: describeAutomationReachabilityError(e) },
+      { error: describeAutomationReachabilityError(e), ok: false },
       { status: 502 }
     );
   }

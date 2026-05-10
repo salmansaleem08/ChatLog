@@ -66,14 +66,18 @@ export async function automationFetch(
   });
 }
 
+/** Default ceiling under typical Vercel Hobby ~60s route limits (leave headroom). */
+export const AUTOMATION_FETCH_VERCEL_SAFE_MS = 55_000;
+
 /**
  * Long-running automation calls (e.g. open chat + read history in browser).
- * Aborts if the request exceeds the timeout to avoid the client waiting forever.
+ * Aborts if the request exceeds the timeout so the route can return an error
+ * before platform limits kill the invocation without a response.
  */
 export async function automationFetchLong(
   path: string,
   init?: Omit<RequestInit, "signal">,
-  timeoutMs: number = 280_000
+  timeoutMs: number = AUTOMATION_FETCH_VERCEL_SAFE_MS
 ): Promise<Response> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
