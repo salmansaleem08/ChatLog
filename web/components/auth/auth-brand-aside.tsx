@@ -1,18 +1,18 @@
 import Image from "next/image";
 import { Check } from "lucide-react";
 
-import { AuthSideCharts } from "@/components/marketing/analytics-previews";
+import { AuthDashboardPreview } from "@/components/marketing/analytics-previews";
 
 export function AuthBrandAside() {
   return (
-    <div className="relative hidden min-h-[50vh] flex-col justify-between overflow-hidden bg-secondary p-8 text-secondary-foreground lg:flex lg:min-h-0 lg:h-full lg:p-10">
+    <div className="relative hidden min-h-[50vh] flex-col justify-between overflow-hidden bg-secondary p-8 text-secondary-foreground lg:flex lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:p-10">
       <div
         className="pointer-events-none absolute -left-24 -top-24 rounded-full bg-primary opacity-10 blur-3xl"
         style={{ width: 480, height: 480 }}
         aria-hidden
       />
       <div
-        className="pointer-events-none absolute -bottom-32 -right-24 rounded-full bg-sky-300/30 opacity-40 blur-3xl dark:bg-sky-400/20"
+        className="pointer-events-none absolute -bottom-32 -right-24 rounded-full bg-chart-3/35 opacity-50 blur-3xl"
         style={{ width: 560, height: 560 }}
         aria-hidden
       />
@@ -53,7 +53,7 @@ export function AuthBrandAside() {
             </li>
           ))}
         </ul>
-        <AuthSideCharts />
+        <AuthDashboardPreview />
       </div>
 
       <p className="relative z-10 text-xs text-secondary-foreground/70">

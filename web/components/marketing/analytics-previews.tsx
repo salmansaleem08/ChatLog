@@ -2,6 +2,8 @@
  * Decorative analytics visuals — sample data only, theme-aware via currentColor.
  */
 
+import { cn } from "@/lib/utils";
+
 export function LandingAnalyticsShowcase() {
   return (
     <section
@@ -36,7 +38,10 @@ export function LandingAnalyticsShowcase() {
               +18% vs last month
             </span>
           </div>
-          <RevenueAreaChart className="mt-6 h-32 w-full text-primary" />
+          <RevenueAreaChart
+            className="mt-6 h-32 w-full text-primary"
+            gradientId="land-revenue-fill"
+          />
           <p className="mt-3 text-xs text-muted-foreground">
             Last 12 weeks · dummy preview
           </p>
@@ -52,7 +57,7 @@ export function LandingAnalyticsShowcase() {
                 847
               </p>
             </div>
-            <span className="rounded-full bg-chart-3/20 px-3 py-1 text-xs font-semibold text-chart-3">
+            <span className="rounded-full bg-chart-3/25 px-3 py-1 text-xs font-semibold text-chart-4">
               Peak: Fri
             </span>
           </div>
@@ -112,7 +117,13 @@ export function LandingAnalyticsShowcase() {
   );
 }
 
-function RevenueAreaChart({ className }: { className?: string }) {
+function RevenueAreaChart({
+  className,
+  gradientId,
+}: {
+  className?: string;
+  gradientId: string;
+}) {
   return (
     <svg
       viewBox="0 0 320 120"
@@ -122,14 +133,14 @@ function RevenueAreaChart({ className }: { className?: string }) {
       aria-hidden
     >
       <defs>
-        <linearGradient id="landRevenueFill" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.35" />
           <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
         </linearGradient>
       </defs>
       <path
         d="M0 95 L28 88 L56 92 L84 72 L112 78 L140 55 L168 62 L196 38 L224 48 L252 28 L280 35 L308 22 L320 18 V120 H0 Z"
-        fill="url(#landRevenueFill)"
+        fill={`url(#${gradientId})`}
       />
       <path
         d="M0 95 L28 88 L56 92 L84 72 L112 78 L140 55 L168 62 L196 38 L224 48 L252 28 L280 35 L308 22 L320 18"
@@ -152,13 +163,13 @@ function OrdersBarChart({ className }: { className?: string }) {
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden
     >
-      {heights.map((h, i) => (
+      {heights.map((barH, i) => (
         <rect
           key={i}
           x={18 + i * 42}
-          y={110 - h}
+          y={110 - barH}
           width="28"
-          height={h}
+          height={barH}
           rx="4"
           fill="currentColor"
           className={i === 5 ? "opacity-100" : "opacity-55"}
@@ -219,26 +230,63 @@ function PipelineDonut({ className }: { className?: string }) {
   );
 }
 
-export function AuthSideCharts() {
+/**
+ * Single floating “dashboard” card on auth brand panels — reads clearly on ink blue.
+ */
+export function AuthDashboardPreview({ compact }: { compact?: boolean }) {
   return (
     <div
-      className="relative z-10 mt-10 w-full max-w-md rounded-xl border border-secondary-foreground/10 bg-secondary-foreground/[0.06] p-4 backdrop-blur-sm"
+      className={cn(
+        "mt-8 w-full max-w-md rounded-2xl border border-white/20 bg-background text-card-foreground shadow-[0_24px_60px_-16px_rgba(0,0,0,0.45)] ring-1 ring-black/5 backdrop-blur-md dark:border-white/10 dark:bg-card dark:shadow-[0_24px_60px_-16px_rgba(0,0,0,0.65)]",
+        compact ? "p-4" : "p-5 sm:p-6"
+      )}
       aria-hidden
     >
-      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-secondary-foreground/60">
-        Live preview
-      </p>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-lg bg-secondary-foreground/[0.08] p-2">
-          <MiniSparkline className="h-14 w-full text-primary" />
-          <p className="mt-1 text-[10px] text-secondary-foreground/70">
-            Revenue trend
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Sample dashboard
+          </p>
+          <p className="mt-1 text-xl font-bold tabular-nums tracking-tight text-foreground sm:text-2xl">
+            PKR 386k
+            <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+              this week
+            </span>
           </p>
         </div>
-        <div className="rounded-lg bg-secondary-foreground/[0.08] p-2">
-          <MiniBars className="h-14 w-full text-primary" />
-          <p className="mt-1 text-[10px] text-secondary-foreground/70">
-            Orders / day
+        <span className="shrink-0 rounded-full bg-primary/15 px-2.5 py-1 text-xs font-semibold text-primary">
+          +12%
+        </span>
+      </div>
+
+      <RevenueAreaChart
+        className={compact ? "mt-3 h-24 w-full text-primary" : "mt-4 h-28 w-full text-primary"}
+        gradientId="auth-revenue-fill"
+      />
+
+      <div className="mt-4 grid grid-cols-3 gap-2 border-t border-border pt-4 sm:gap-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Orders
+          </p>
+          <p className="mt-0.5 text-sm font-bold tabular-nums text-foreground sm:text-base">
+            142
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Avg. ticket
+          </p>
+          <p className="mt-0.5 text-sm font-bold tabular-nums text-foreground sm:text-base">
+            2.7k
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Fulfilled
+          </p>
+          <p className="mt-0.5 text-sm font-bold tabular-nums text-chart-2 sm:text-base">
+            94%
           </p>
         </div>
       </div>
@@ -262,45 +310,5 @@ export function MiniSparkline({ className }: { className?: string }) {
         fillOpacity={0.12}
       />
     </svg>
-  );
-}
-
-function MiniBars({ className }: { className?: string }) {
-  const h = [14, 22, 18, 28, 20, 32, 24];
-  return (
-    <svg viewBox="0 0 120 48" className={className}>
-      {h.map((height, i) => (
-        <rect
-          key={i}
-          x={8 + i * 15}
-          y={44 - height}
-          width="10"
-          height={height}
-          rx="2"
-          fill="currentColor"
-          opacity={i === 5 ? 1 : 0.45}
-        />
-      ))}
-    </svg>
-  );
-}
-
-export function AuthMobileCharts() {
-  return (
-    <div
-      className="mt-6 grid w-full max-w-sm grid-cols-2 gap-3 opacity-90"
-      aria-hidden
-    >
-      <div className="rounded-lg border border-secondary-foreground/15 bg-secondary-foreground/[0.06] p-2">
-        <MiniSparkline className="h-12 w-full text-primary" />
-        <p className="mt-1 text-[10px] text-secondary-foreground/70">
-          Revenue
-        </p>
-      </div>
-      <div className="rounded-lg border border-secondary-foreground/15 bg-secondary-foreground/[0.06] p-2">
-        <MiniBars className="h-12 w-full text-primary" />
-        <p className="mt-1 text-[10px] text-secondary-foreground/70">Orders</p>
-      </div>
-    </div>
   );
 }

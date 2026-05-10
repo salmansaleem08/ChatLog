@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 
 import { AuthBrandAside } from "@/components/auth/auth-brand-aside";
-import { AuthMobileCharts } from "@/components/marketing/analytics-previews";
+import { AuthDashboardPreview } from "@/components/marketing/analytics-previews";
 import { AuthFormPanel } from "@/components/auth/auth-form-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,7 @@ export default function LoginPage() {
           aria-hidden
         />
         <div
-          className="pointer-events-none absolute -bottom-20 -right-16 rounded-full bg-sky-300/30 opacity-40 blur-3xl dark:bg-sky-400/20"
+          className="pointer-events-none absolute -bottom-20 -right-16 rounded-full bg-chart-3/35 opacity-50 blur-3xl"
           style={{ width: 400, height: 400 }}
           aria-hidden
         />
@@ -41,7 +41,7 @@ export default function LoginPage() {
             Sign in to see every order extracted from your chats, stock that stays
             accurate, and customer updates that send themselves.
           </p>
-          <AuthMobileCharts />
+          <AuthDashboardPreview compact />
         </div>
       </div>
 
