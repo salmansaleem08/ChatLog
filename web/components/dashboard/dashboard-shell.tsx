@@ -3,25 +3,18 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  BarChart3,
-  LayoutDashboard,
-  Package,
-  Settings,
-  ShoppingCart,
-  Users,
-} from "lucide-react";
 
 import { SignOutButton } from "@/components/dashboard/sign-out-button";
+import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { cn } from "@/lib/utils";
 
 const nav = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
-  { href: "/dashboard/orders", label: "Orders", icon: ShoppingCart },
-  { href: "/dashboard/inventory", label: "Inventory", icon: Package },
-  { href: "/dashboard/customers", label: "Customers", icon: Users },
-  { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+  { href: "/dashboard", label: "Overview" },
+  { href: "/dashboard/orders", label: "Orders" },
+  { href: "/dashboard/inventory", label: "Inventory" },
+  { href: "/dashboard/customers", label: "Customers" },
+  { href: "/dashboard/analytics", label: "Analytics" },
+  { href: "/dashboard/settings", label: "Settings" },
 ] as const;
 
 export function DashboardShell({
@@ -37,40 +30,38 @@ export function DashboardShell({
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 border-b border-border bg-card/90 backdrop-blur-lg supports-[backdrop-filter]:bg-card/80">
-        <div className="flex min-h-14 flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-4 sm:py-0">
-          <div className="flex items-center justify-between gap-2 sm:contents">
+      <header className="sticky top-0 z-50 border-b border-border/80 bg-card/85 shadow-sm backdrop-blur-xl supports-[backdrop-filter]:bg-card/70">
+        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-3 px-4 py-3 sm:px-5 md:h-16 md:grid-cols-[1fr_auto_1fr] md:items-center md:gap-4 md:py-0">
+          <div className="flex items-center justify-between md:justify-start">
             <Link
               href="/dashboard"
-              className="flex shrink-0 items-center gap-2 rounded-md outline-none ring-ring focus-visible:ring-2"
+              className="flex items-center gap-2.5 rounded-lg outline-none ring-ring focus-visible:ring-2"
             >
               <Image
                 src="/logo.png"
                 alt=""
-                width={28}
-                height={28}
-                className="size-7 object-contain opacity-95 sm:size-8"
+                width={30}
+                height={30}
+                className="size-7 object-contain sm:size-8"
               />
-              <span className="text-sm font-semibold tracking-tight">
+              <span className="text-sm font-semibold tracking-tight text-foreground">
                 ChatLog
               </span>
             </Link>
-            <div className="flex items-center gap-1 sm:hidden">
-              <span className="max-w-[100px] truncate text-xs text-muted-foreground">
-                {businessName}
-              </span>
+            <div className="flex items-center gap-0.5 md:hidden">
+              <ThemeToggle />
               <SignOutButton
                 variant="outline"
-                className="h-8 shrink-0 px-2.5 text-xs font-medium"
+                className="h-8 border-border/80 px-2.5 text-xs"
               />
             </div>
           </div>
 
           <nav
-            className="-mx-1 flex flex-1 items-center gap-0.5 overflow-x-auto px-1 scrollbar-none sm:mx-0 sm:px-0"
+            className="flex items-center justify-center gap-0.5 overflow-x-auto scrollbar-none sm:gap-1"
             aria-label="Main"
           >
-            {nav.map(({ href, label, icon: Icon }) => {
+            {nav.map(({ href, label }) => {
               const active =
                 href === "/dashboard"
                   ? pathname === "/dashboard"
@@ -80,39 +71,37 @@ export function DashboardShell({
                   key={href}
                   href={href}
                   className={cn(
-                    "flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors sm:gap-2 sm:px-3 sm:text-sm",
+                    "whitespace-nowrap rounded-full px-3 py-2 text-xs font-medium tracking-wide transition-colors sm:px-4 sm:text-sm",
                     active
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
                 >
-                  <Icon
-                    className="size-3.5 shrink-0 sm:size-4"
-                    strokeWidth={1.75}
-                    aria-hidden
-                  />
-                  <span className="whitespace-nowrap">{label}</span>
+                  {label}
                 </Link>
               );
             })}
           </nav>
 
-          <div className="hidden min-w-0 items-center gap-2 sm:flex sm:shrink-0">
-            <div className="hidden min-w-0 text-right md:block">
+          <div className="hidden items-center justify-end gap-2 md:flex">
+            <div className="mr-1 hidden min-w-0 max-w-[200px] text-right lg:block">
               <p className="truncate text-sm font-medium text-foreground">
                 {businessName}
               </p>
               <p className="truncate text-xs text-muted-foreground">{email}</p>
             </div>
+            <ThemeToggle />
             <SignOutButton
               variant="outline"
-              className="h-9 shrink-0 px-3 text-sm font-medium"
+              className="h-9 shrink-0 border-border/80 px-3 text-sm"
             />
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-8">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+        {children}
+      </main>
     </div>
   );
 }

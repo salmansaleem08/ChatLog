@@ -130,9 +130,17 @@ export function WhatsAppLinkPanel({
     <section className="rounded-xl border border-border bg-card p-5 shadow-sm sm:p-6">
       <h2 className="text-lg font-semibold tracking-tight">WhatsApp</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        Link the WhatsApp number you use for customer orders. We open WhatsApp Web
-        in a secure session: scan the QR code with the phone that owns that number.
-        Chat ingestion will use this connection once message processing is enabled.
+        Link the WhatsApp you use for orders. Scan the QR below with your phone
+        (WhatsApp → Linked devices). To show the QR only here — not a separate
+        Chrome window — set{" "}
+        <code className="rounded-md border border-border bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground">
+          HEADLESS=1
+        </code>{" "}
+        in{" "}
+        <code className="rounded-md border border-border bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground">
+          whatsapp-service/.env
+        </code>{" "}
+        and restart the automation server.
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">

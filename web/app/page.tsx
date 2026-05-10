@@ -12,6 +12,7 @@ import {
   SplitSquareVertical,
 } from "lucide-react";
 
+import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { LandingAnalyticsShowcase } from "@/components/marketing/analytics-previews";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -89,6 +90,7 @@ export default function Home() {
             </span>
           </Link>
           <nav className="flex w-full items-center justify-end gap-1 sm:w-auto">
+            <ThemeToggle className="mr-1" />
             <Link
               href="/auth/login"
               className={cn(

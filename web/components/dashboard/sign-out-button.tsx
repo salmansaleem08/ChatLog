@@ -1,10 +1,12 @@
 "use client";
 
+import { LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export function SignOutButton({
   className,
@@ -28,11 +30,15 @@ export function SignOutButton({
     <Button
       type="button"
       variant={variant}
-      className={className}
+      className={cn("gap-2", className)}
       onClick={signOut}
       disabled={loading}
+      aria-label={loading ? "Signing out" : "Sign out"}
     >
-      {loading ? "Signing out…" : "Sign out"}
+      <LogOut className="size-4 shrink-0 opacity-90" strokeWidth={1.75} />
+      <span className="hidden sm:inline">
+        {loading ? "Signing out…" : "Sign out"}
+      </span>
     </Button>
   );
 }
