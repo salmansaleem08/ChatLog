@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import { saveWhatsAppPhoneE164 } from "@/app/dashboard/settings/actions";
 import { Button } from "@/components/ui/button";
@@ -48,7 +49,9 @@ export function WhatsAppLinkPanel({
   const [loadingStart, setLoadingStart] = useState(false);
   const [qrNonce, setQrNonce] = useState(0);
   const [savingPhone, setSavingPhone] = useState(false);
-  const [qrLoadError, setQrLoadError] = useState(false);
+  const [qrBlobUrl, setQrBlobUrl] = useState<string | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrFetchError, setQrFetchError] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     setError(null);
@@ -138,10 +141,73 @@ export function WhatsAppLinkPanel({
     null;
 
   useEffect(() => {
-    if (showQr) {
-      setQrLoadError(false);
+    if (!showQr) {
+      setQrBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setQrLoading(false);
+      setQrFetchError(false);
+      return;
     }
-  }, [showQr, qrNonce]);
+
+    let cancelled = false;
+    let createdUrl: string | null = null;
+
+    async function loadQr(attempt: number) {
+      setQrLoading(true);
+      setQrFetchError(false);
+      try {
+        const res = await fetch(
+          `/api/whatsapp/session/qr?t=${qrNonce}&n=${attempt}`,
+          { cache: "no-store" }
+        );
+        if (cancelled) return;
+
+        if (res.ok) {
+          const blob = await res.blob();
+          if (cancelled) return;
+          const nextUrl = URL.createObjectURL(blob);
+          createdUrl = nextUrl;
+          setQrBlobUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return nextUrl;
+          });
+          setQrLoading(false);
+          return;
+        }
+
+        const data = (await res.json().catch(() => ({}))) as { code?: string };
+        if (res.status === 409 && data.code === "already_logged_in") {
+          setQrLoading(false);
+          await refreshStatus();
+          return;
+        }
+        if (
+          res.status === 404 &&
+          data.code === "qr_not_ready" &&
+          attempt < 8
+        ) {
+          await new Promise((r) => setTimeout(r, 1500));
+          if (!cancelled) return loadQr(attempt + 1);
+        }
+        setQrFetchError(true);
+        setQrLoading(false);
+      } catch {
+        if (!cancelled) {
+          setQrFetchError(true);
+          setQrLoading(false);
+        }
+      }
+    }
+
+    void loadQr(0);
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [showQr, qrNonce, refreshStatus]);
 
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-sm sm:p-6">
@@ -177,15 +243,20 @@ export function WhatsAppLinkPanel({
       {status === "connected" || status === "awaiting_scan" ? (
         <div className="mt-4 rounded-lg border border-border/80 bg-muted/20 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
           <p className="text-xs font-semibold uppercase tracking-wider text-foreground/80">
-            Linked account
+            Number from your linked WhatsApp session
           </p>
           <p className="mt-1 text-base font-semibold tabular-nums text-foreground">
             {recognizedLive ?? "We’re confirming the number…"}
           </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            This is read from the browser session that stays signed in for ChatLog — not
+            from the optional team label below. It should match the phone you scanned with
+            in WhatsApp → Settings → Linked devices.
+          </p>
           {status === "connected" ? (
             <p className="mt-2 text-xs text-muted-foreground">
-              Status refreshes periodically so you always see whether you’re still
-              signed in after hosting restarts.
+              Status refreshes periodically so you can see if you need to scan again after
+              a restart.
             </p>
           ) : null}
         </div>
@@ -260,22 +331,34 @@ export function WhatsAppLinkPanel({
         </div>
 
         {showQr ? (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-4">
+          <div className="flex w-full max-w-[260px] flex-col items-center gap-3 rounded-lg border border-dashed border-border bg-muted/30 p-4 sm:max-w-none">
             <p className="text-center text-xs text-muted-foreground">
               Scan this code with your phone. It may take a short while to appear.
             </p>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              key={qrNonce}
-              src={`/api/whatsapp/session/qr?t=${qrNonce}`}
-              alt="Code to link your WhatsApp account"
-              width={220}
-              height={220}
-              className="rounded-md bg-white p-1"
-              onLoad={() => setQrLoadError(false)}
-              onError={() => setQrLoadError(true)}
-            />
-            {qrLoadError ? (
+            <div className="flex min-h-[220px] w-full max-w-[220px] items-center justify-center rounded-md bg-white p-1">
+              {qrLoading ? (
+                <Loader2
+                  className="size-10 animate-spin text-muted-foreground"
+                  aria-hidden
+                />
+              ) : null}
+              {!qrLoading && qrBlobUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={qrBlobUrl}
+                  alt="Code to link your WhatsApp account"
+                  width={220}
+                  height={220}
+                  className="max-h-[220px] max-w-full rounded-md"
+                />
+              ) : null}
+              {!qrLoading && !qrBlobUrl && !qrFetchError ? (
+                <span className="px-2 text-center text-xs text-muted-foreground">
+                  Preparing code…
+                </span>
+              ) : null}
+            </div>
+            {qrFetchError ? (
               <p className="max-w-xs text-center text-xs text-destructive">
                 The code didn’t load. Tap <strong>Refresh status</strong> or{" "}
                 <strong>Connect WhatsApp</strong> again.

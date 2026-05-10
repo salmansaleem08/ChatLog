@@ -190,35 +190,78 @@ class WhatsAppSessionManager:
         return phone
 
     @staticmethod
-    def _read_linked_phone(driver: webdriver.Chrome) -> Optional[str]:
-        html = ""
-        try:
-            html = driver.page_source or ""
-        except Exception:
+    def _normalize_e164_candidate(raw: str) -> Optional[str]:
+        raw = (raw or "").strip()
+        if not raw:
             return None
-        for pattern in (
-            r'href="tel:([\d\s+\-()]{8,})"',
-            r'<span[^>]*>(\+\d[\d\s\-\u2011\u00A0]{6,})</span>',
-            r'(\+[1-9]\d{9,})',
-            r'(00[\d\s\-]{11,})',
+        normalized = "".join(ch for ch in raw if ch.isdigit() or ch == "+")
+        if normalized.startswith("00"):
+            digits = "".join(ch for ch in normalized if ch.isdigit())
+            if len(digits) < 10:
+                return None
+            return "+" + digits[2:]
+        if not normalized.startswith("+"):
+            digits = "".join(ch for ch in normalized if ch.isdigit())
+            if len(digits) < 10:
+                return None
+            normalized = "+" + digits
+        digits = "".join(ch for ch in normalized if ch.isdigit())
+        if len(digits) < 10:
+            return None
+        return "+" + digits
+
+    @classmethod
+    def _extract_phones_from_html(cls, html: str) -> List[str]:
+        found: List[str] = []
+        for m in re.finditer(r'href="tel:([^"]+)"', html, flags=re.I):
+            p = cls._normalize_e164_candidate(m.group(1))
+            if p:
+                found.append(p)
+        for m in re.finditer(
+            r"<span[^>]*>(\+\d[\d\s\-\u2011\u00A0]{6,})</span>", html
         ):
-            m = re.search(pattern, html)
-            if not m:
-                continue
-            raw = (m.group(1) if m.lastindex else m.group()).strip()
-            normalized = "".join(ch for ch in raw if ch.isdigit() or ch == "+")
-            if normalized.startswith("00"):
-                normalized = "+" + normalized[2:]
-                normalized = "+" + "".join(ch for ch in normalized if ch.isdigit())
-            elif not normalized.startswith("+"):
-                digits = "".join(ch for ch in normalized if ch.isdigit())
-                if len(digits) < 10:
-                    continue
-                normalized = "+" + digits
-            if len(normalized) < 10:
-                continue
-            return normalized
-        return None
+            p = cls._normalize_e164_candidate(m.group(1))
+            if p:
+                found.append(p)
+        for m in re.finditer(r"\b(\+[1-9]\d{6,14})\b", html):
+            p = cls._normalize_e164_candidate(m.group(1))
+            if p:
+                found.append(p)
+        for m in re.finditer(r"\b(00[\d\s\-]{11,})\b", html):
+            p = cls._normalize_e164_candidate(m.group(1))
+            if p:
+                found.append(p)
+        return found
+
+    @classmethod
+    def _read_linked_phone(cls, driver: webdriver.Chrome) -> Optional[str]:
+        """
+        Prefer numbers near the signed-in header — full-page regex hits ads/support
+        and shows the wrong 'linked' line.
+        """
+        fragments: List[str] = []
+        try:
+            for sel in ('[data-testid="default-user"]', "header"):
+                for el in driver.find_elements(By.CSS_SELECTOR, sel)[:3]:
+                    try:
+                        fragments.append(el.get_attribute("outerHTML") or "")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if not fragments:
+            try:
+                src = driver.page_source or ""
+                fragments.append(src[-40000:])
+            except Exception:
+                return None
+        combined = "\n".join(fragments)
+        phones = cls._extract_phones_from_html(combined)
+        if not phones:
+            return None
+        # Longest national number first — avoids short spurious matches.
+        phones.sort(key=lambda p: len(re.sub(r"\D", "", p)), reverse=True)
+        return phones[0]
 
     def _wait_ready_for_chat_list(self, driver: webdriver.Chrome, timeout: float = 55.0) -> None:
         """
@@ -776,12 +819,26 @@ class WhatsAppSessionManager:
                 return fresh.screenshot_as_png
 
             try:
-                return _capture()
+                png = _capture()
+                if not png:
+                    log.warning(
+                        "get_qr_png empty logged_in=%s canvas=%s",
+                        WhatsAppSessionManager._detect_logged_in(driver),
+                        WhatsAppSessionManager._pick_qr_canvas(driver) is not None,
+                    )
+                return png
             except Exception:
                 try:
                     driver.refresh()
-                    return _capture()
+                    png = _capture()
+                    if not png:
+                        log.warning(
+                            "get_qr_png empty after refresh logged_in=%s",
+                            WhatsAppSessionManager._detect_logged_in(driver),
+                        )
+                    return png
                 except Exception:
+                    log.warning("get_qr_png failed after refresh", exc_info=True)
                     return None
 
     @staticmethod
@@ -812,17 +869,22 @@ class WhatsAppSessionManager:
 
     @staticmethod
     def _detect_logged_in(driver: webdriver.Chrome) -> bool:
-        selectors = (
-            '[data-testid="chat-list"]',
-            '[data-testid="conversation-panel-wrapper"]',
-            '[data-testid="default-user"]',
-            "#pane-side",
-            '[data-testid="chatlist-panel"]',
-            '[data-testid="cell-frame-container"]',
-        )
-        for sel in selectors:
-            if driver.find_elements(By.CSS_SELECTOR, sel):
-                return True
+        """
+        Must not treat an empty left rail (#pane-side) as logged-in — that breaks QR
+        capture (thinks session is ready) and linked-phone scrape (picks random page numbers).
+        """
+        if driver.find_elements(By.CSS_SELECTOR, '[data-testid="default-user"]'):
+            return True
+        if driver.find_elements(
+            By.CSS_SELECTOR, '[data-testid="conversation-panel-wrapper"]'
+        ):
+            return True
+        if not driver.find_elements(By.CSS_SELECTOR, '[data-testid="chat-list"]'):
+            return False
+        if driver.find_elements(By.CSS_SELECTOR, '[data-testid="cell-frame-container"]'):
+            return True
+        if driver.find_elements(By.CSS_SELECTOR, '#pane-side a[href*="/chat/"]'):
+            return True
         return False
 
     @staticmethod

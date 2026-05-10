@@ -32,7 +32,39 @@ export async function GET() {
     );
 
     if (!res.ok) {
-      return NextResponse.json({ error: "QR not available" }, { status: 404 });
+      const meta = (await res.json().catch(() => ({}))) as {
+        detail?: string | string[];
+      };
+      const detailRaw = meta.detail;
+      const detail =
+        typeof detailRaw === "string"
+          ? detailRaw
+          : Array.isArray(detailRaw)
+            ? String(detailRaw[0] ?? "")
+            : "";
+
+      if (res.status === 409 || detail === "already_logged_in") {
+        return NextResponse.json(
+          {
+            code: "already_logged_in",
+            error:
+              "This workspace is already linked. Refresh the page to see the latest status.",
+          },
+          { status: 409 }
+        );
+      }
+
+      const code = detail === "qr_not_ready" ? "qr_not_ready" : "qr_unavailable";
+      return NextResponse.json(
+        {
+          code,
+          error:
+            code === "qr_not_ready"
+              ? "The code is still loading. Try again in a moment."
+              : "The code could not be loaded. Try Connect WhatsApp again.",
+        },
+        { status: res.status >= 400 ? res.status : 404 }
+      );
     }
 
     const buf = await res.arrayBuffer();

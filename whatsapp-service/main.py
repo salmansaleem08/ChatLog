@@ -172,5 +172,15 @@ def whatsapp_session_qr(
 
     png = mgr.get_qr_png()
     if not png:
-        raise HTTPException(status_code=404, detail="QR not available")
+        st = mgr.get_status()
+        if st.get("logged_in"):
+            log.info("session_qr skip already_logged_in business_id=%s", bid)
+            raise HTTPException(status_code=409, detail="already_logged_in")
+        log.warning(
+            "session_qr not_ready business_id=%s running=%s needs_qr=%s",
+            bid,
+            st.get("running"),
+            st.get("needs_qr"),
+        )
+        raise HTTPException(status_code=404, detail="qr_not_ready")
     return Response(content=png, media_type="image/png")
