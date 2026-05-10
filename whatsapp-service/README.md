@@ -4,7 +4,7 @@ Run the FastAPI service on your machine with a **visible** Chrome window so What
 
 ## Prerequisites
 
-- **Python 3.12** (matches `runtime.txt`).
+- **Python 3.9+** (code avoids `str | None` syntax so 3.9 works). **3.12** recommended: `python3.12 -m venv .venv` if your default `python3` is old.
 - **Google Chrome** installed (macOS path below). Selenium 4 can use **Selenium Manager** to download a matching ChromeDriver when `CHROMEDRIVER_PATH` is unset.
 - Repo path: adjust commands if your clone is not `~/Documents/ChatLog`.
 
@@ -53,7 +53,7 @@ Verify from any terminal:
 curl -s http://127.0.0.1:8000/health
 ```
 
-→ `{"status":"ok"}` (should return immediately). If it hangs or errors, fix this before using Settings → WhatsApp.
+→ `{"status":"ok"}` (should return immediately). If you previously saw `TypeError: unsupported operand type(s) for |`, pull the latest code (Python 3.9–compatible types) or use Python 3.12 for the venv.
 
 ## Run the Next.js app (separate terminal)
 

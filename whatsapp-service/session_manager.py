@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import threading
 import uuid
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -25,7 +25,7 @@ WA_URL = "https://web.whatsapp.com/"
 _QR_WAIT_SEC = float(os.environ.get("WHATSAPP_QR_WAIT_SEC", "40"))
 _QR_MIN_SIDE = 80
 
-_registry: dict[str, "WhatsAppSessionManager"] = {}
+_registry: Dict[str, "WhatsAppSessionManager"] = {}
 _registry_lock = threading.Lock()
 
 
@@ -77,7 +77,7 @@ class WhatsAppSessionManager:
     def __init__(self, business_id: str) -> None:
         self._business_id = business_id
         self._lock = threading.Lock()
-        self._driver: webdriver.Chrome | None = None
+        self._driver: Optional[webdriver.Chrome] = None
 
     def _user_data_dir(self) -> str:
         path = os.path.join(_session_base_dir(), self._business_id)
@@ -132,7 +132,7 @@ class WhatsAppSessionManager:
             self._driver.set_page_load_timeout(120)
             self._driver.get(WA_URL)
 
-    def get_status(self) -> dict[str, Any]:
+    def get_status(self) -> Dict[str, Any]:
         with self._lock:
             if self._driver is None:
                 return {
@@ -157,7 +157,7 @@ class WhatsAppSessionManager:
                     "error": str(exc),
                 }
 
-    def get_qr_png(self) -> bytes | None:
+    def get_qr_png(self) -> Optional[bytes]:
         """PNG of the login QR canvas after it has rendered (waits up to _QR_WAIT_SEC)."""
         with self._lock:
             if self._driver is None:
@@ -170,7 +170,7 @@ class WhatsAppSessionManager:
                 el = self._pick_qr_canvas(d)
                 return el if el is not None else False
 
-            def _capture() -> bytes | None:
+            def _capture() -> Optional[bytes]:
                 wait = WebDriverWait(driver, _QR_WAIT_SEC, poll_frequency=0.45)
                 wait.until(_qr_canvas_ready)
                 if self._detect_logged_in(driver):
@@ -192,7 +192,7 @@ class WhatsAppSessionManager:
     @staticmethod
     def _pick_qr_canvas(driver: webdriver.Chrome):
         """Choose the largest plausible QR canvas (WhatsApp often has several tiny canvases)."""
-        scored: list[tuple[bool, float, Any]] = []
+        scored: List[Tuple[bool, float, Any]] = []
         for el in driver.find_elements(By.CSS_SELECTOR, "canvas"):
             try:
                 size = el.size

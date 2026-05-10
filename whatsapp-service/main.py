@@ -1,7 +1,10 @@
 """ChatLog automation service. Run: uvicorn main:app --host 0.0.0.0 --port $PORT"""
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
@@ -15,7 +18,7 @@ app = FastAPI(title="ChatLog Service")
 
 
 def require_automation_secret(
-    x_chatlog_secret: str | None = Header(default=None, alias="X-ChatLog-Secret"),
+    x_chatlog_secret: Optional[str] = Header(default=None, alias="X-ChatLog-Secret"),
 ) -> None:
     expected = os.environ.get("CHATLOG_AUTOMATION_SECRET", "").strip()
     if not expected or not x_chatlog_secret or x_chatlog_secret != expected:
@@ -27,14 +30,14 @@ class StartBody(BaseModel):
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/whatsapp/session/start")
 def whatsapp_session_start(
     body: StartBody,
-    _: None = Depends(require_automation_secret),
+    _: Any = Depends(require_automation_secret),
 ) -> dict:
     """
     Launch Chrome for this business_id, open WhatsApp Web, reuse on-disk profile.
@@ -58,7 +61,7 @@ def whatsapp_session_start(
 @app.get("/whatsapp/session/status")
 def whatsapp_session_status(
     business_id: str = Query(..., min_length=32, max_length=64),
-    _: None = Depends(require_automation_secret),
+    _: Any = Depends(require_automation_secret),
 ) -> dict:
     try:
         bid = normalize_business_id(business_id)
@@ -71,7 +74,7 @@ def whatsapp_session_status(
 @app.get("/whatsapp/session/qr")
 def whatsapp_session_qr(
     business_id: str = Query(..., min_length=32, max_length=64),
-    _: None = Depends(require_automation_secret),
+    _: Any = Depends(require_automation_secret),
 ) -> Response:
     """PNG of the QR canvas when the session is waiting for scan (may be empty)."""
     try:
