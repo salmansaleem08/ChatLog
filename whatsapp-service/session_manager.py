@@ -43,6 +43,19 @@ def _use_headless() -> bool:
     return os.environ.get("HEADLESS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _should_open_link_tab() -> bool:
+    """
+    Open a fresh WhatsApp Web tab and close the old one (visible browser only).
+    Helps QR / main UI paint reliably; disabled on headless hosting.
+    """
+    raw = os.environ.get("WHATSAPP_OPEN_LINK_TAB", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return not _use_headless() and not os.environ.get("RENDER")
+
+
 def _session_base_dir() -> str:
     """
     Prefer WHATSAPP_SESSION_DIR when set and writable (paid Render disk, local path).
@@ -84,7 +97,7 @@ class WhatsAppSessionManager:
 
     def __init__(self, business_id: str) -> None:
         self._business_id = business_id
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._driver: Optional[webdriver.Chrome] = None
         self._linked_phone_ttl_sec = float(
             os.environ.get("WHATSAPP_LINKED_PHONE_CACHE_SEC", "90")
@@ -144,6 +157,65 @@ class WhatsAppSessionManager:
             self._driver = self._new_driver()
             self._driver.set_page_load_timeout(120)
             self._driver.get(WA_URL)
+            if not _use_headless():
+                try:
+                    self._driver.maximize_window()
+                except Exception:
+                    try:
+                        self._driver.set_window_size(1400, 900)
+                    except Exception:
+                        pass
+
+    def bring_up_linking_surface_for_scan(self) -> None:
+        """
+        Call after /whatsapp/session/start: maximize visible window and optionally
+        move session to a fresh tab so linking matches what users see in a normal browser.
+        """
+        with self._lock:
+            driver = self._driver
+            if driver is None:
+                return
+            if not _use_headless():
+                try:
+                    driver.maximize_window()
+                except Exception:
+                    try:
+                        driver.set_window_size(1400, 900)
+                    except Exception:
+                        pass
+            if not _should_open_link_tab():
+                return
+            try:
+                previous = driver.current_window_handle
+                driver.execute_script("window.open(arguments[0], '_blank');", WA_URL)
+                time.sleep(1.0)
+                handles = driver.window_handles
+                if len(handles) < 2:
+                    log.info(
+                        "link_tab skipped business_id=%s (single window)",
+                        self._business_id,
+                    )
+                    return
+                driver.switch_to.window(previous)
+                try:
+                    driver.close()
+                except Exception:
+                    pass
+                remaining = driver.window_handles
+                if not remaining:
+                    log.warning(
+                        "link_tab lost all windows business_id=%s", self._business_id
+                    )
+                    return
+                driver.switch_to.window(remaining[0])
+                time.sleep(0.35)
+                log.info(
+                    "link_tab fresh_whatsapp_tab business_id=%s", self._business_id
+                )
+            except Exception:
+                log.warning(
+                    "link_tab failed business_id=%s", self._business_id, exc_info=True
+                )
 
     def get_status(self) -> Dict[str, Any]:
         with self._lock:

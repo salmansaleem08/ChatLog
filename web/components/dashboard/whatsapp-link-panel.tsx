@@ -218,6 +218,12 @@ export function WhatsAppLinkPanel({
         <strong>Settings → Linked devices → Link a device</strong>, then scan the
         code that appears here.
       </p>
+      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+        On the computer that runs pairing, a browser window may open or switch to a new tab
+        for WhatsApp Web — leave it open until this page shows <strong>Connected</strong>. If
+        the code area says you are already linked, tap <strong>Refresh status</strong> to
+        update.
+      </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <span

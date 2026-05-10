@@ -57,14 +57,23 @@ def whatsapp_session_start(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid business_id") from exc
 
+    mgr = get_manager(bid)
     try:
-        get_manager(bid).ensure_started()
+        mgr.ensure_started()
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Could not start browser session: {exc!s}",
         ) from exc
-    status = get_manager(bid).get_status()
+    try:
+        mgr.bring_up_linking_surface_for_scan()
+    except Exception:
+        log.warning(
+            "session/start bring_up_linking_surface_failed business_id=%s",
+            bid,
+            exc_info=True,
+        )
+    status = mgr.get_status()
     return {"ok": True, "business_id": bid, **status}
 
 
