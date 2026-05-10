@@ -1,10 +1,9 @@
 import { WhatsAppLinkPanel } from "@/components/dashboard/whatsapp-link-panel";
+import type { WhatsappLinkStatus } from "@/lib/whatsapp-profile-sync";
 import { createClient } from "@/lib/supabase/server";
 
-function parseWaStatus(
-  s: string | null | undefined
-): "disconnected" | "awaiting_scan" | "connected" {
-  if (s === "connected" || s === "awaiting_scan") return s;
+function parseWaStatus(s: string | null | undefined): WhatsappLinkStatus {
+  if (s === "connected" || s === "awaiting_scan" || s === "session_lost") return s;
   return "disconnected";
 }
 
@@ -20,7 +19,7 @@ export default async function SettingsPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("whatsapp_link_status, whatsapp_phone_e164")
+    .select("whatsapp_link_status, whatsapp_phone_e164, whatsapp_linked_phone_live")
     .eq("id", user.id)
     .maybeSingle();
 
@@ -40,6 +39,9 @@ export default async function SettingsPage() {
           profile?.whatsapp_link_status as string | undefined
         )}
         initialPhone={(profile?.whatsapp_phone_e164 as string | null) ?? null}
+        initialRecognizedPhone={
+          (profile?.whatsapp_linked_phone_live as string | null) ?? null
+        }
       />
     </div>
   );

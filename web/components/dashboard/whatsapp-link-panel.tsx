@@ -6,12 +6,8 @@ import { saveWhatsAppPhoneE164 } from "@/app/dashboard/settings/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { WhatsappLinkStatus } from "@/lib/whatsapp-profile-sync";
 import { cn } from "@/lib/utils";
-
-type WhatsappLinkStatus =
-  | "disconnected"
-  | "awaiting_scan"
-  | "connected";
 
 type StatusPayload = {
   serviceConfigured?: boolean;
@@ -19,6 +15,7 @@ type StatusPayload = {
   logged_in?: boolean;
   needs_qr?: boolean;
   running?: boolean;
+  recognizedPhone?: string | null;
   error?: string;
 };
 
@@ -28,6 +25,8 @@ function statusLabel(s: WhatsappLinkStatus): string {
       return "Connected";
     case "awaiting_scan":
       return "Waiting for scan";
+    case "session_lost":
+      return "Reconnect needed";
     default:
       return "Not linked";
   }
@@ -36,9 +35,11 @@ function statusLabel(s: WhatsappLinkStatus): string {
 export function WhatsAppLinkPanel({
   initialStatus,
   initialPhone,
+  initialRecognizedPhone,
 }: {
   initialStatus: WhatsappLinkStatus;
   initialPhone: string | null;
+  initialRecognizedPhone?: string | null;
 }) {
   const [status, setStatus] = useState<WhatsappLinkStatus>(initialStatus);
   const [phone, setPhone] = useState(initialPhone ?? "");
@@ -73,6 +74,15 @@ export function WhatsAppLinkPanel({
   useEffect(() => {
     if (status !== "awaiting_scan") return;
     const t = setInterval(refreshStatus, 5000);
+    return () => clearInterval(t);
+  }, [status, refreshStatus]);
+
+  useEffect(() => {
+    if (status !== "connected" && status !== "session_lost") return;
+    const interval =
+      status === "connected" ? 45_000 : status === "session_lost" ? 25_000 : 0;
+    if (!interval) return;
+    const t = setInterval(refreshStatus, interval);
     return () => clearInterval(t);
   }, [status, refreshStatus]);
 
@@ -120,6 +130,13 @@ export function WhatsAppLinkPanel({
     serviceConfigured &&
     (Boolean(remote?.needs_qr) || Boolean(remote?.running));
 
+  const recognizedLive =
+    (typeof remote?.recognizedPhone === "string" &&
+      remote.recognizedPhone.trim()) ||
+    (typeof initialRecognizedPhone === "string" &&
+      initialRecognizedPhone.trim()) ||
+    null;
+
   useEffect(() => {
     if (showQr) {
       setQrLoadError(false);
@@ -140,10 +157,11 @@ export function WhatsAppLinkPanel({
         <span
           className={cn(
             "inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium",
-            status === "connected" &&
-              "bg-primary/10 text-primary",
+            status === "connected" && "bg-primary/10 text-primary",
             status === "awaiting_scan" &&
               "bg-amber-500/10 text-amber-800 dark:text-amber-200",
+            status === "session_lost" &&
+              "border border-amber-500/35 bg-amber-500/8 text-amber-900 dark:text-amber-100",
             status === "disconnected" && "bg-muted text-muted-foreground"
           )}
         >
@@ -156,6 +174,36 @@ export function WhatsAppLinkPanel({
         ) : null}
       </div>
 
+      {status === "connected" || status === "awaiting_scan" ? (
+        <div className="mt-4 rounded-lg border border-border/80 bg-muted/20 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+          <p className="text-xs font-semibold uppercase tracking-wider text-foreground/80">
+            Linked account
+          </p>
+          <p className="mt-1 text-base font-semibold tabular-nums text-foreground">
+            {recognizedLive ?? "We’re confirming the number…"}
+          </p>
+          {status === "connected" ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Status refreshes periodically so you always see whether you’re still
+              signed in after hosting restarts.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {status === "session_lost" ? (
+        <div className="mt-5 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3 text-sm leading-relaxed text-amber-950 dark:text-amber-50">
+          <p className="font-medium">
+            WhatsApp disconnected from ChatLog&apos;s pairing session.
+          </p>
+          <p className="mt-1 text-amber-900/95 dark:text-amber-100/90">
+            This usually happens after the pairing service restarted or WhatsApp ended
+            the session. Tap <strong>Connect WhatsApp</strong> and scan another code to
+            come back online.
+          </p>
+        </div>
+      ) : null}
+
       {error ? (
         <p className="mt-3 text-sm text-destructive" role="alert">
           {error}
@@ -163,10 +211,10 @@ export function WhatsAppLinkPanel({
       ) : null}
 
       <div className="mt-6 space-y-2">
-        <Label htmlFor="wa-phone">Business WhatsApp number (optional)</Label>
+        <Label htmlFor="wa-phone">Personal label — optional</Label>
         <p className="text-xs text-muted-foreground">
-          Add your number with country code (for example +92 …) so your team can
-          recognize it in ChatLog.
+          Add whatever number you want printed on dashboards for teammates (for example
+          the same WhatsApp Business line you advertise). Doesn&apos;t control linking.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <Input
@@ -186,7 +234,7 @@ export function WhatsAppLinkPanel({
             disabled={savingPhone}
             onClick={savePhone}
           >
-            {savingPhone ? "Saving…" : "Save number"}
+            {savingPhone ? "Saving…" : "Save label"}
           </Button>
         </div>
       </div>

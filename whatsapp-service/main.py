@@ -68,7 +68,65 @@ def whatsapp_session_status(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid business_id") from exc
 
-    return {"ok": True, "business_id": bid, **get_manager(bid).get_status()}
+    mgr = get_manager(bid)
+    try:
+        mgr.ensure_started()
+        status_payload = mgr.get_status()
+        return {"ok": True, "business_id": bid, **status_payload}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"WhatsApp automation error: {exc!s}",
+        ) from exc
+
+
+@app.get("/whatsapp/chats/list")
+def whatsapp_chats_list(
+    business_id: str = Query(..., min_length=32, max_length=64),
+    _: Any = Depends(require_automation_secret),
+) -> dict:
+    try:
+        bid = normalize_business_id(business_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid business_id") from exc
+    mgr = get_manager(bid)
+    try:
+        mgr.ensure_started()
+        chats = mgr.list_chats()
+        return {"ok": True, "business_id": bid, "chats": chats}
+    except RuntimeError as exc:
+        reason = str(exc)
+        code = (
+            409
+            if reason in ("not_logged_in",)
+            else 503 if reason.startswith("driver") else 500
+        )
+        raise HTTPException(status_code=code, detail=f"cannot_list_chats:{reason}") from exc
+
+
+@app.get("/whatsapp/chat/messages")
+def whatsapp_chat_messages(
+    business_id: str = Query(..., min_length=32, max_length=64),
+    chat_jid: str = Query(..., min_length=5, max_length=120),
+    _: Any = Depends(require_automation_secret),
+) -> dict:
+    try:
+        bid = normalize_business_id(business_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid business_id") from exc
+    mgr = get_manager(bid)
+    try:
+        mgr.ensure_started()
+        payload = mgr.fetch_chat_messages(chat_jid)
+        return {"ok": True, "business_id": bid, **payload}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        reason = str(exc)
+        raise HTTPException(
+            status_code=409 if reason == "not_logged_in" else 500,
+            detail=f"cannot_read_messages:{reason}",
+        ) from exc
 
 
 @app.get("/whatsapp/session/qr")

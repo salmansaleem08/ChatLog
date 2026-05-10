@@ -60,16 +60,32 @@ export async function POST() {
       needs_qr: Boolean(body.needs_qr),
       running: Boolean(body.running),
     };
+
+    const upstreamPhone =
+      typeof body.linked_phone_e164 === "string" &&
+      body.linked_phone_e164.trim().length > 0
+        ? body.linked_phone_e164.trim()
+        : undefined;
+
     const whatsapp_link_status = await syncWhatsappProfile(
       supabase,
       user.id,
-      remote
+      remote,
+      upstreamPhone
     );
+
+    const { data: phoneRow } = await supabase
+      .from("profiles")
+      .select("whatsapp_linked_phone_live")
+      .eq("id", user.id)
+      .maybeSingle();
 
     return NextResponse.json({
       ok: true,
       whatsapp_link_status,
       ...remote,
+      recognizedPhone:
+        (phoneRow?.whatsapp_linked_phone_live as string | null) ?? null,
     });
   } catch (e) {
     if (

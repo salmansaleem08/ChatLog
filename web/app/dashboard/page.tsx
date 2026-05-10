@@ -4,8 +4,12 @@ import { createClient } from "@/lib/supabase/server";
 
 function parseWaStatus(
   s: string | null | undefined
-): "disconnected" | "awaiting_scan" | "connected" {
-  if (s === "connected" || s === "awaiting_scan") return s;
+):
+  | "disconnected"
+  | "awaiting_scan"
+  | "connected"
+  | "session_lost" {
+  if (s === "connected" || s === "awaiting_scan" || s === "session_lost") return s;
   return "disconnected";
 }
 
