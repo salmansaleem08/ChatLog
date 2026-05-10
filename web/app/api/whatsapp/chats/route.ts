@@ -237,8 +237,8 @@ export async function GET() {
       )
       .map((c) => ({
         business_id: user.id,
-        wa_chat_jid: c.chat_jid as string,
-        phone_digits: c.phone_digits as string,
+        wa_chat_jid: (c.chat_jid as string).slice(0, 50),
+        phone_digits: (c.phone_digits as string).slice(0, 50),
         contact_name: typeof c.display_name === "string" ? c.display_name : "",
         last_message_preview:
           typeof c.last_message_preview === "string"
