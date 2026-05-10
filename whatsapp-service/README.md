@@ -71,3 +71,7 @@ Open [http://localhost:3000](http://localhost:3000), sign in, go to **Dashboard 
 ## Security
 
 Never commit `.env` or `.env.local`. If secrets were pasted into chat or tickets, **rotate** them in Supabase, OpenRouter, Resend, etc.
+
+## Next.js on Vercel, automation on this computer
+
+Vercel cannot call `127.0.0.1` on your laptop. Use an HTTPS tunnel (ngrok, Cloudflare Tunnel, etc.) to port **8000**, put that URL in Vercel as **`CHATLOG_AUTOMATION_URL`**, and use the same **`CHATLOG_AUTOMATION_SECRET`** locally and on Vercel. Full steps: **`docs/VERCEL_FRONTEND_LOCAL_BACKEND.md`**.
