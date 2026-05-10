@@ -111,6 +111,8 @@ class WhatsAppSessionManager:
         )
         self._linked_phone_cached: Optional[str] = None
         self._linked_phone_cached_at = 0.0
+        # Last-resort row click → URL JID during list_chats (cap per call).
+        self._list_chats_row_click_budget = 0
 
     def _user_data_dir(self) -> str:
         path = os.path.join(_session_base_dir(), self._business_id)
@@ -561,32 +563,44 @@ class WhatsAppSessionManager:
         return False
 
     def _try_merge_sidebar_row(
-        self, row: Any, out: Dict[str, Dict[str, Any]]
+        self,
+        row: Any,
+        out: Dict[str, Dict[str, Any]],
+        *,
+        pass_num: int = -1,
+        row_index: int = 0,
     ) -> bool:
         if not self._is_real_contact_sidebar_row(row):
+            if pass_num == 0:
+                log.info(
+                    "list_chats row_jid business_id=%s row=%s outcome=skipped "
+                    "reason=not_real_contact",
+                    self._business_id,
+                    row_index,
+                )
             return False
         try:
-            link_el = None
-            for sel in (
-                'a[href*="/chat/"]',
-                '[href*="/chat/"]',
-                '[role="row"] a[href*="/chat/"]',
-            ):
-                found = row.find_elements(By.CSS_SELECTOR, sel)
-                if found:
-                    link_el = found[0]
-                    break
-            jid: Optional[str] = None
-            if link_el is not None:
-                href = (link_el.get_attribute("href") or "").strip()
-                jid = self._jid_from_chat_href(href)
+            name = self._extract_row_display_name(row)
+            jid, method, detail = self._resolve_jid_for_list_row(
+                row,
+                pass_num=pass_num,
+                row_index=row_index,
+                preview_name=name,
+            )
             if not jid:
-                jid = self._jid_from_cell_row_deep(row, self._driver)
-            if not jid or jid.endswith("@g.us"):
+                if pass_num == 0:
+                    log.info(
+                        "list_chats row_jid business_id=%s row=%s name=%r "
+                        "outcome=skipped reason=no_jid method=%s detail=%s",
+                        self._business_id,
+                        row_index,
+                        (name or "")[:80],
+                        method,
+                        (detail or "")[:120],
+                    )
                 return False
 
             digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
-            name = self._extract_row_display_name(row)
             prev_el = row.find_elements(
                 By.CSS_SELECTOR, '[data-testid="last-msg-status"]'
             )
@@ -606,6 +620,18 @@ class WhatsAppSessionManager:
             last_ms = self._parse_sidebar_time(meta_text, meta_title_attr)
             display_name = name or ("+" + digits if digits else "Contact")
 
+            if pass_num == 0:
+                log.info(
+                    "list_chats row_jid business_id=%s row=%s name=%r outcome=merged "
+                    "method=%s jid=%s detail=%s",
+                    self._business_id,
+                    row_index,
+                    (name or "")[:80],
+                    method,
+                    jid.split("@")[0][:28],
+                    (detail or "")[:120],
+                )
+
             out[jid] = {
                 "chat_jid": jid,
                 "phone_digits": digits,
@@ -614,8 +640,157 @@ class WhatsAppSessionManager:
                 "last_message_at_ms": last_ms or 0,
             }
             return True
-        except Exception:
+        except Exception as exc:
+            if pass_num == 0:
+                log.info(
+                    "list_chats row_jid business_id=%s row=%s outcome=error err=%s",
+                    self._business_id,
+                    row_index,
+                    exc,
+                )
             return False
+
+    def _resolve_jid_for_list_row(
+        self,
+        row: Any,
+        *,
+        pass_num: int,
+        row_index: int,
+        preview_name: str,
+    ) -> Tuple[Optional[str], str, Optional[str]]:
+        """
+        Returns (jid, method, detail). method is a short tag for logs.
+        """
+        driver = self._driver
+        if driver is None:
+            return None, "no_driver", None
+
+        link_el = None
+        for sel in (
+            'a[href*="/chat/"]',
+            '[href*="/chat/"]',
+            '[role="row"] a[href*="/chat/"]',
+        ):
+            found = row.find_elements(By.CSS_SELECTOR, sel)
+            if found:
+                link_el = found[0]
+                break
+        if link_el is not None:
+            href = (link_el.get_attribute("href") or "").strip()
+            jid = self._jid_from_chat_href_including_groups(href)
+            if jid:
+                return jid, "href_anchor", href[:160]
+            if "phone=" in href.lower():
+                try:
+                    q = parse_qs(urlparse(href).query)
+                    for key in ("phone", "text"):
+                        vals = q.get(key)
+                        if vals and re.fullmatch(
+                            r"\d{10,15}", (vals[0] or "").strip()
+                        ):
+                            j = f"{vals[0].strip()}@c.us"
+                            return j, "href_phone_query", j
+                except Exception:
+                    pass
+
+        jid = self._jid_from_dom_ancestor_attr_scan(driver, row)
+        if jid:
+            return jid, "ancestor_attrs", None
+
+        jid = self._jid_from_subtree_attr_scan(driver, row)
+        if jid:
+            return jid, "subtree_attrs", None
+
+        jid = self._jid_from_row_markup_residual(row)
+        if jid:
+            return jid, "row_href_outerhtml_attr", None
+
+        if self._list_chats_row_click_budget > 0:
+            self._list_chats_row_click_budget -= 1
+            jid_c = self._jid_from_row_open_chat_url(driver, row)
+            if jid_c:
+                return (
+                    jid_c,
+                    "click_navigate",
+                    f"budget_left={self._list_chats_row_click_budget}",
+                )
+            return (
+                None,
+                "click_navigate_failed",
+                f"budget_left={self._list_chats_row_click_budget}",
+            )
+
+        return None, "no_row_click_budget_left", None
+
+    def _jid_from_row_open_chat_url(
+        self, driver: webdriver.Chrome, row: Any
+    ) -> Optional[str]:
+        """Open row chat, read JID from location bar, return to list."""
+        try:
+            cur = driver.current_url or ""
+            if WhatsAppSessionManager._chrome_url_has_thread(cur):
+                driver.get(WA_URL)
+                time.sleep(0.65)
+                try:
+                    WebDriverWait(driver, 18).until(
+                        EC.presence_of_element_located(
+                            (By.CSS_SELECTOR, '[data-testid="chat-list"]')
+                        )
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+                row,
+            )
+            time.sleep(0.12)
+            driver.execute_script("arguments[0].click();", row)
+            WebDriverWait(driver, 12).until(
+                lambda d: WhatsAppSessionManager._chrome_url_has_thread(
+                    d.current_url or ""
+                )
+            )
+            cur_url = driver.current_url or ""
+            jid = self._jid_from_chat_href_including_groups(cur_url)
+            if not jid and "phone=" in cur_url.lower():
+                try:
+                    q = parse_qs(urlparse(cur_url).query)
+                    ph = (q.get("phone") or [None])[0]
+                    if ph and re.fullmatch(r"\d{10,15}", ph.strip()):
+                        jid = f"{ph.strip()}@c.us"
+                except Exception:
+                    pass
+            driver.get(WA_URL)
+            time.sleep(0.75)
+            try:
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, '[data-testid="chat-list"]')
+                    )
+                )
+            except Exception:
+                pass
+            log.info(
+                "list_chats row_click_resolve business_id=%s jid=%s",
+                self._business_id,
+                (jid or "none").split("@")[0][:24] if jid else "none",
+            )
+            return jid
+        except Exception:
+            log.warning(
+                "list_chats row_click_resolve_failed business_id=%s",
+                self._business_id,
+                exc_info=True,
+            )
+            try:
+                driver.get(WA_URL)
+                time.sleep(0.6)
+            except Exception:
+                pass
+            return None
 
     def _wait_for_real_sidebar_chats(
         self, driver: webdriver.Chrome, timeout: float = 90.0
@@ -795,8 +970,29 @@ class WhatsAppSessionManager:
             rows, counts = self._gather_sidebar_candidate_rows(driver)
             real_rows = [r for r in rows if self._is_real_contact_sidebar_row(r)]
             merged_this_pass = 0
-            for row in real_rows:
-                if self._try_merge_sidebar_row(row, out):
+            for row_index, row in enumerate(real_rows):
+                if pass_num == 0 and row_index < 3:
+                    try:
+                        html_dbg = row.get_attribute("outerHTML") or ""
+                        log.debug(
+                            "list_chats row_outerhtml business_id=%s row=%s "
+                            "chars=%s\n%s",
+                            self._business_id,
+                            row_index,
+                            len(html_dbg),
+                            html_dbg,
+                        )
+                    except Exception as exc:
+                        log.debug(
+                            "list_chats row_outerhtml_failed business_id=%s "
+                            "row=%s err=%s",
+                            self._business_id,
+                            row_index,
+                            exc,
+                        )
+                if self._try_merge_sidebar_row(
+                    row, out, pass_num=pass_num, row_index=row_index
+                ):
                     merged_this_pass += 1
             merged_after = len(out)
             st = self._get_sidebar_scroll_state(driver)
@@ -1041,6 +1237,8 @@ class WhatsAppSessionManager:
             # Wait for real contact rows, not an empty virtualized shell.
             self._wait_for_real_sidebar_chats(driver)
 
+            self._list_chats_row_click_budget = 5
+
             aggregated: Dict[str, Dict[str, Any]] = {}
             env_scroll = os.environ.get(
                 "WHATSAPP_CHAT_SCROLL_MAX_PASSES", ""
@@ -1081,11 +1279,11 @@ class WhatsAppSessionManager:
             return chats
 
     @staticmethod
-    def _jid_from_chat_href(url: str) -> Optional[str]:
+    def _jid_from_chat_href_including_groups(url: str) -> Optional[str]:
+        """Parse /chat/&lt;token&gt; from a URL; keep @g.us (groups)."""
         if "/chat/" not in url and "chat/" not in url:
             return None
         try:
-            # Full URL or path-only (SPA sometimes uses relative paths).
             if "http" in url:
                 path = urlparse(url).path
             else:
@@ -1096,13 +1294,196 @@ class WhatsAppSessionManager:
                 return None
             raw = path.split("/chat/", 1)[1].split("/", 1)[0]
             jid = unquote(unquote(raw)).split("?", 1)[0].strip()
-            if not jid:
-                return None
-            if jid.endswith("@g.us"):
-                return None
-            return jid
+            return jid or None
         except Exception:
             return None
+
+    @staticmethod
+    def _jid_from_chat_href(url: str) -> Optional[str]:
+        jid = WhatsAppSessionManager._jid_from_chat_href_including_groups(url)
+        if jid and jid.endswith("@g.us"):
+            return None
+        return jid
+
+    @classmethod
+    def _extract_first_jid_from_scraped_text(cls, text: str) -> Optional[str]:
+        """
+        One blob of text (attribute value, aria-label, etc.): find a WhatsApp id.
+        Prefers @c.us / @s.whatsapp.net / @g.us / @lid; else longest 7–20 digit run → @c.us.
+        """
+        if not text or not isinstance(text, str):
+            return None
+        t = text.strip()
+        if not t or len(t) > 80_000:
+            return None
+        patterns = (
+            r"(\d{10,20}@[cs]\.(?:us|whatsapp\.net))",
+            r"(\d{6,20}@g\.us)",
+            r"([A-Za-z0-9.\-+_]{1,120}@lid)",
+            r"(\d{10,20}@lid)",
+        )
+        for pat in patterns:
+            m = re.search(pat, t, flags=re.I)
+            if not m:
+                continue
+            cand = m.group(1).strip()
+            if cand.lower().endswith("@g.us") and re.fullmatch(
+                r"\d{6,20}@g\.us", cand, flags=re.I
+            ):
+                return cand.lower()
+            jid = cls._jid_from_token_with_prefix(cand)
+            if jid:
+                return jid
+        jid = cls._jid_from_token_with_prefix(t)
+        if jid:
+            return jid
+        best: Optional[str] = None
+        best_len = 0
+        for m in re.finditer(r"\d{7,}", t):
+            d = m.group(0)
+            ln = len(d)
+            if 7 <= ln <= 20 and ln > best_len:
+                best = d
+                best_len = ln
+        if best:
+            return f"{best}@c.us"
+        return None
+
+    @staticmethod
+    def _collect_ancestor_attr_values_js(
+        driver: webdriver.Chrome, row: Any
+    ) -> List[str]:
+        try:
+            raw = driver.execute_script(
+                """
+                const el = arguments[0];
+                const out = [];
+                let p = el;
+                for (let i = 0; i < 14 && p; i++) {
+                  if (p.attributes) {
+                    for (const a of p.attributes) {
+                      const v = (a.value || '').trim();
+                      if (v && v.length <= 1200) out.push(v);
+                    }
+                  }
+                  p = p.parentElement;
+                }
+                return out;
+                """,
+                row,
+            )
+        except Exception:
+            return []
+        return [str(x) for x in (raw or []) if x]
+
+    @staticmethod
+    def _collect_subtree_attr_values_js(
+        driver: webdriver.Chrome, row: Any
+    ) -> List[str]:
+        try:
+            raw = driver.execute_script(
+                """
+                const root = arguments[0];
+                const out = [];
+                function walk(el) {
+                  if (!el || el.nodeType !== 1) return;
+                  if (el.attributes) {
+                    for (const a of el.attributes) {
+                      const v = (a.value || '').trim();
+                      if (v && v.length <= 1200) out.push(v);
+                    }
+                  }
+                  const ch = el.children;
+                  if (!ch) return;
+                  for (let i = 0; i < ch.length; i++) walk(ch[i]);
+                }
+                walk(root);
+                return out;
+                """,
+                row,
+            )
+        except Exception:
+            return []
+        return [str(x) for x in (raw or []) if x]
+
+    @classmethod
+    def _jid_from_dom_ancestor_attr_scan(
+        cls, driver: webdriver.Chrome, row: Any
+    ) -> Optional[str]:
+        for blob in cls._collect_ancestor_attr_values_js(driver, row):
+            jid = cls._extract_first_jid_from_scraped_text(blob)
+            if jid:
+                return jid
+        return None
+
+    @classmethod
+    def _jid_from_subtree_attr_scan(
+        cls, driver: webdriver.Chrome, row: Any
+    ) -> Optional[str]:
+        for blob in cls._collect_subtree_attr_values_js(driver, row):
+            jid = cls._extract_first_jid_from_scraped_text(blob)
+            if jid:
+                return jid
+        return None
+
+    @classmethod
+    def _jid_from_row_markup_residual(cls, row: Any) -> Optional[str]:
+        """href / phone inside row, outerHTML patterns, row root attributes."""
+        href_selectors = (
+            'a[href*="/chat/"]',
+            'a[href*="chat/"]',
+            '[href*="/chat/"]',
+            '[href*="chat/"]',
+            'a[href*="send?phone="]',
+            '[href*="send?phone="]',
+            'a[href*="phone="]',
+        )
+        for sel in href_selectors:
+            try:
+                for el in row.find_elements(By.CSS_SELECTOR, sel):
+                    href = (el.get_attribute("href") or "").strip()
+                    if not href:
+                        continue
+                    jid = cls._jid_from_chat_href_including_groups(href)
+                    if jid:
+                        return jid
+                    if "phone=" in href.lower():
+                        try:
+                            q = parse_qs(urlparse(href).query)
+                            for key in ("phone", "text"):
+                                vals = q.get(key)
+                                if vals and re.fullmatch(
+                                    r"\d{10,15}", (vals[0] or "").strip()
+                                ):
+                                    return f"{vals[0].strip()}@c.us"
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        try:
+            html = row.get_attribute("outerHTML") or ""
+        except Exception:
+            html = ""
+        jid = cls._jid_from_row_html_fragment_list(html)
+        if jid:
+            return jid
+        for attr in (
+            "data-id",
+            "data-jid",
+            "data-key",
+            "id",
+            "data-chat-id",
+            "data-contact-id",
+        ):
+            try:
+                blob = (row.get_attribute(attr) or "").strip()
+            except Exception:
+                blob = ""
+            if blob:
+                jid = cls._extract_first_jid_from_scraped_text(blob)
+                if jid:
+                    return jid
+        return None
 
     @staticmethod
     def _normalize_jid_candidate(raw: str) -> Optional[str]:
@@ -1126,12 +1507,17 @@ class WhatsAppSessionManager:
         if not token:
             return None
         m = re.search(
-            r"(\d{10,20}@[cs]\.(?:us|whatsapp\.net)|[A-Za-z0-9.\-+]+@lid)",
+            r"(\d{10,20}@[cs]\.(?:us|whatsapp\.net)|\d{6,20}@g\.us|[A-Za-z0-9.\-+]+@lid)",
             token,
             flags=re.I,
         )
         if m:
-            jid = cls._normalize_jid_candidate(m.group(1))
+            cand = m.group(1).strip()
+            if cand.lower().endswith("@g.us") and re.fullmatch(
+                r"\d{6,20}@g\.us", cand, flags=re.I
+            ):
+                return cand.lower()
+            jid = cls._normalize_jid_candidate(cand)
             if jid:
                 return jid
         if "_" in token:
@@ -1139,67 +1525,23 @@ class WhatsAppSessionManager:
             jid = cls._normalize_jid_candidate(tail)
             if jid:
                 return jid
+            if re.fullmatch(r"\d{6,20}@g\.us", tail, flags=re.I):
+                return tail.lower()
         return cls._normalize_jid_candidate(token)
 
     @classmethod
     def _jid_from_attr_blob(cls, blob: str) -> Optional[str]:
         blob = (blob or "").strip()
-        if not blob or "@" not in blob:
+        if not blob:
             return None
-        jid = cls._jid_from_token_with_prefix(blob)
-        if jid:
-            return jid
-        for m in re.finditer(
-            r"(\d{10,20}@[cs]\.(?:us|whatsapp\.net)|[A-Za-z0-9.\-+_]+@lid)",
-            blob,
-            flags=re.I,
-        ):
-            cand = m.group(1)
-            jid = cls._jid_from_token_with_prefix(cand)
-            if jid:
-                return jid
-        return None
+        return cls._extract_first_jid_from_scraped_text(blob)
 
     @classmethod
     def _jid_from_dom_dataset_chain(
         cls, driver: webdriver.Chrome, row: Any
     ) -> Optional[str]:
-        """Read data-* and @-containing attrs up the DOM chain (JIDs often on parent)."""
-        try:
-            blobs = driver.execute_script(
-                """
-                const el = arguments[0];
-                const out = [];
-                let p = el;
-                for (let i = 0; i < 12 && p; i++) {
-                  if (p.dataset) {
-                    for (const k of Object.keys(p.dataset)) {
-                      const v = p.dataset[k];
-                      if (v && String(v).length) out.push(String(v));
-                    }
-                  }
-                  if (p.attributes) {
-                    for (const a of p.attributes) {
-                      const v = (a.value || '').trim();
-                      if (!v || v.length > 800) continue;
-                      if (v.includes('@')) out.push(v);
-                    }
-                  }
-                  p = p.parentElement;
-                }
-                return out;
-                """,
-                row,
-            )
-        except Exception:
-            return None
-        if not blobs:
-            return None
-        for blob in blobs:
-            jid = cls._jid_from_attr_blob(str(blob))
-            if jid and not jid.endswith("@g.us"):
-                return jid
-        return None
+        """Backward-compatible name: full ancestor attribute scan."""
+        return cls._jid_from_dom_ancestor_attr_scan(driver, row)
 
     @classmethod
     def _jid_from_row_html_fragment(cls, html: str) -> Optional[str]:
@@ -1249,67 +1591,63 @@ class WhatsAppSessionManager:
         return None
 
     @classmethod
+    def _jid_from_row_html_fragment_list(cls, html: str) -> Optional[str]:
+        """Like _jid_from_row_html_fragment but allows @g.us and a final blob scan."""
+        if not html:
+            return None
+        snippet = html[:450_000]
+        patterns = (
+            r'(?:https?://(?:web\.)?whatsapp\.com)?/chat/([^"\'\\&<>\s]+)',
+            r'(?:\\?/|%2F)chat(?:\\?/|%2F)([^"\'\\&<>\s]+)',
+        )
+        for pat in patterns:
+            for m in re.finditer(pat, snippet, flags=re.I):
+                token = m.group(1).strip()
+                token = unquote(unquote(token)).split("?")[0].split("#")[0]
+                if not token or ".." in token:
+                    continue
+                jid = cls._extract_first_jid_from_scraped_text(token)
+                if jid:
+                    return jid
+                jid = cls._normalize_jid_candidate(token)
+                if jid:
+                    return jid
+        for m in re.finditer(
+            r'(?:phone|PHONE)(?:=|%3D)(\d{10,15})(?:\D|$)', snippet
+        ):
+            jid = cls._normalize_jid_candidate(m.group(1))
+            if jid:
+                return jid
+        for m in re.finditer(
+            r'\b(\d{10,20}@[cs]\.(?:us|whatsapp\.net))\b', snippet, flags=re.I
+        ):
+            jid = cls._normalize_jid_candidate(m.group(1))
+            if jid:
+                return jid
+        for m in re.finditer(
+            r'["\']([A-Za-z0-9.\-+]+@(c\.us|s\.whatsapp\.net|lid|g\.us))["\']',
+            snippet,
+            flags=re.I,
+        ):
+            cand = m.group(1)
+            jid = cls._extract_first_jid_from_scraped_text(cand)
+            if jid:
+                return jid
+        return cls._extract_first_jid_from_scraped_text(snippet)
+
+    @classmethod
     def _jid_from_cell_row_deep(
         cls, row: Any, driver: Optional[webdriver.Chrome] = None
     ) -> Optional[str]:
         """Resolve chat JID when the row is not wrapped in a classic <a href=/chat/…>."""
         if driver is not None:
-            jid_ds = cls._jid_from_dom_dataset_chain(driver, row)
-            if jid_ds:
-                return jid_ds
-        href_selectors = (
-            'a[href*="/chat/"]',
-            'a[href*="chat/"]',
-            '[href*="/chat/"]',
-            '[href*="chat/"]',
-            'a[href*="send?phone="]',
-            '[href*="send?phone="]',
-            'a[href*="phone="]',
-        )
-        for sel in href_selectors:
-            try:
-                for el in row.find_elements(By.CSS_SELECTOR, sel):
-                    href = (el.get_attribute("href") or "").strip()
-                    if not href:
-                        continue
-                    jid = cls._jid_from_chat_href(href)
-                    if jid:
-                        return jid
-                    if "phone=" in href.lower():
-                        try:
-                            q = parse_qs(urlparse(href).query)
-                            for key in ("phone", "text"):
-                                vals = q.get(key)
-                                if vals and re.fullmatch(
-                                    r"\d{10,15}", (vals[0] or "").strip()
-                                ):
-                                    return f"{vals[0].strip()}@c.us"
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        try:
-            html = row.get_attribute("outerHTML") or ""
-        except Exception:
-            html = ""
-        jid = cls._jid_from_row_html_fragment(html)
-        if jid:
-            return jid
-        for attr in (
-            "data-id",
-            "data-jid",
-            "data-chat-id",
-            "data-contact-id",
-        ):
-            try:
-                blob = (row.get_attribute(attr) or "").strip()
-            except Exception:
-                blob = ""
-            if blob:
-                jid_a = cls._jid_from_attr_blob(blob)
-                if jid_a and not jid_a.endswith("@g.us"):
-                    return jid_a
-        return None
+            jid_a = cls._jid_from_dom_ancestor_attr_scan(driver, row)
+            if jid_a:
+                return jid_a
+            jid_s = cls._jid_from_subtree_attr_scan(driver, row)
+            if jid_s:
+                return jid_s
+        return cls._jid_from_row_markup_residual(row)
 
     @staticmethod
     def _scroll_chat_pane_to_end(driver: webdriver.Chrome) -> None:
@@ -1405,7 +1743,7 @@ class WhatsAppSessionManager:
         for link in links:
             try:
                 href = (link.get_attribute("href") or "").strip()
-                jid = self._jid_from_chat_href(href)
+                jid = self._jid_from_chat_href_including_groups(href)
                 if not jid and "phone=" in href.lower():
                     try:
                         q = parse_qs(urlparse(href).query)
@@ -1414,7 +1752,7 @@ class WhatsAppSessionManager:
                             jid = f"{ph.strip()}@c.us"
                     except Exception:
                         pass
-                if not jid or jid.endswith("@g.us"):
+                if not jid:
                     continue
                 if jid in out:
                     continue
