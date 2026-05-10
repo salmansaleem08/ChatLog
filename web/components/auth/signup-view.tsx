@@ -99,7 +99,7 @@ export function SignUpView() {
     if (profileError) {
       setErrors({
         business:
-          "Account created but business profile could not be saved. Check the profiles table and RLS policies.",
+          "We could not save your business name. Confirm the profiles table exists and try again.",
       });
       return;
     }
