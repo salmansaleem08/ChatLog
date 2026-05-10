@@ -256,7 +256,7 @@ export async function GET() {
       const { error: upErr } = await supabase
         .from("whatsapp_chat_threads")
         .upsert(rows, {
-          onConflict: "business_id,wa_chat_jid",
+          onConflict: "business_id,wa_chat_jid_md5",
         });
 
       if (upErr) {

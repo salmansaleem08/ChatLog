@@ -601,6 +601,20 @@ class WhatsAppSessionManager:
                 )
                 return False
 
+            validated_jid = WhatsAppSessionManager._validate_jid(jid)
+            if not validated_jid:
+                log.info(
+                    "list_chats row_jid business_id=%s row=%s name=%r "
+                    "outcome=skipped reason=invalid_jid_format raw_jid=%s method=%s",
+                    self._business_id,
+                    row_index,
+                    (name or "")[:80],
+                    jid.split("@")[0][:40],
+                    method,
+                )
+                return False
+            jid = validated_jid
+
             digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
             prev_el = row.find_elements(
                 By.CSS_SELECTOR, '[data-testid="last-msg-status"]'
@@ -1647,6 +1661,32 @@ class WhatsAppSessionManager:
                 jid = cls._extract_first_jid_from_scraped_text(blob)
                 if jid:
                     return jid
+        return None
+
+    @staticmethod
+    def _validate_jid(jid: Optional[str]) -> Optional[str]:
+        """
+        Strict final gate applied to every JID before it is stored or used.
+        Valid formats:
+          - {10-15 digits}@c.us  (individual contact)
+          - {10-15 digits}@s.whatsapp.net → normalised to @c.us
+          - {digits}@g.us  (group; digit local-part, any length)
+          - Bare 10-15 digit string → auto-appended with @c.us
+        Anything else (too long, too short, concatenated numbers, etc.) returns None.
+        """
+        if not jid or not isinstance(jid, str):
+            return None
+        jid = jid.strip()
+        lower = jid.lower()
+        if lower.endswith("@g.us"):
+            local = jid[: -len("@g.us")]
+            return lower if re.fullmatch(r"\d+", local) else None
+        for suffix in ("@c.us", "@s.whatsapp.net"):
+            if lower.endswith(suffix):
+                local = jid[: -len(suffix)]
+                return f"{local}@c.us" if re.fullmatch(r"\d{10,15}", local) else None
+        if re.fullmatch(r"\d{10,15}", jid):
+            return f"{jid}@c.us"
         return None
 
     @staticmethod
