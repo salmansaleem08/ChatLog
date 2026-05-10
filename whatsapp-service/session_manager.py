@@ -17,8 +17,13 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 WA_URL = "https://web.whatsapp.com/"
+
+# WhatsApp paints the login QR asynchronously; instant canvas queries often miss it.
+_QR_WAIT_SEC = float(os.environ.get("WHATSAPP_QR_WAIT_SEC", "40"))
+_QR_MIN_SIDE = 80
 
 _registry: dict[str, "WhatsAppSessionManager"] = {}
 _registry_lock = threading.Lock()
@@ -88,12 +93,21 @@ class WhatsAppSessionManager:
         opts.add_argument(f"--user-data-dir={self._user_data_dir()}")
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-software-rasterizer")
+        opts.add_argument("--window-size=1280,900")
+        opts.add_argument("--lang=en-US")
+        opts.add_argument(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+        # Softer automation footprint — WhatsApp may hide QR when flags look bot-like.
         opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--window-size=1280,840")
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
         if _use_headless():
             opts.add_argument("--headless=new")
+            # Keep GPU path; some sites render blank canvases with disable-gpu in Docker.
+            opts.add_argument("--disable-software-rasterizer")
+            opts.add_argument("--run-all-compositor-stages-before-draw")
 
         driver_path = os.environ.get("CHROMEDRIVER_PATH", "").strip()
         service = (
@@ -115,6 +129,7 @@ class WhatsAppSessionManager:
                     self._driver = None
 
             self._driver = self._new_driver()
+            self._driver.set_page_load_timeout(120)
             self._driver.get(WA_URL)
 
     def get_status(self) -> dict[str, Any]:
@@ -143,17 +158,62 @@ class WhatsAppSessionManager:
                 }
 
     def get_qr_png(self) -> bytes | None:
-        """PNG screenshot of first canvas (WhatsApp QR), if present."""
+        """PNG of the login QR canvas after it has rendered (waits up to _QR_WAIT_SEC)."""
         with self._lock:
             if self._driver is None:
                 return None
-            try:
-                canvases = self._driver.find_elements(By.CSS_SELECTOR, "canvas")
-                if not canvases:
+            driver = self._driver
+
+            def _qr_canvas_ready(d: webdriver.Chrome):
+                if self._detect_logged_in(d):
+                    return True
+                el = self._pick_qr_canvas(d)
+                return el if el is not None else False
+
+            def _capture() -> bytes | None:
+                wait = WebDriverWait(driver, _QR_WAIT_SEC, poll_frequency=0.45)
+                wait.until(_qr_canvas_ready)
+                if self._detect_logged_in(driver):
                     return None
-                return canvases[0].screenshot_as_png
+                fresh = self._pick_qr_canvas(driver)
+                if fresh is None:
+                    return None
+                return fresh.screenshot_as_png
+
+            try:
+                return _capture()
             except Exception:
-                return None
+                try:
+                    driver.refresh()
+                    return _capture()
+                except Exception:
+                    return None
+
+    @staticmethod
+    def _pick_qr_canvas(driver: webdriver.Chrome):
+        """Choose the largest plausible QR canvas (WhatsApp often has several tiny canvases)."""
+        scored: list[tuple[bool, float, Any]] = []
+        for el in driver.find_elements(By.CSS_SELECTOR, "canvas"):
+            try:
+                size = el.size
+                w = float(size.get("width") or 0)
+                h = float(size.get("height") or 0)
+                if w < _QR_MIN_SIDE or h < _QR_MIN_SIDE:
+                    continue
+                area = w * h
+                try:
+                    vis = el.is_displayed()
+                except Exception:
+                    vis = True
+                scored.append((vis, area, el))
+            except Exception:
+                continue
+        if not scored:
+            return None
+        visible = [t for t in scored if t[0]]
+        pool = visible if visible else scored
+        pool.sort(key=lambda t: t[1], reverse=True)
+        return pool[0][2]
 
     @staticmethod
     def _detect_logged_in(driver: webdriver.Chrome) -> bool:

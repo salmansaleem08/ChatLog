@@ -47,6 +47,7 @@ export function WhatsAppLinkPanel({
   const [loadingStart, setLoadingStart] = useState(false);
   const [qrNonce, setQrNonce] = useState(0);
   const [savingPhone, setSavingPhone] = useState(false);
+  const [qrLoadError, setQrLoadError] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     setError(null);
@@ -118,6 +119,12 @@ export function WhatsAppLinkPanel({
     status === "awaiting_scan" &&
     serviceConfigured &&
     (Boolean(remote?.needs_qr) || Boolean(remote?.running));
+
+  useEffect(() => {
+    if (showQr) {
+      setQrLoadError(false);
+    }
+  }, [showQr, qrNonce]);
 
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-sm sm:p-6">
@@ -206,16 +213,28 @@ export function WhatsAppLinkPanel({
         {showQr ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-4">
             <p className="text-center text-xs text-muted-foreground">
-              Scan with your business phone (WhatsApp → Linked devices).
+              Scan with your business phone (WhatsApp → Linked devices). The image
+              can take up to a minute while the server opens WhatsApp Web.
             </p>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
+              key={qrNonce}
               src={`/api/whatsapp/session/qr?t=${qrNonce}`}
               alt="WhatsApp Web QR code"
               width={220}
               height={220}
               className="rounded-md bg-white p-1"
+              onLoad={() => setQrLoadError(false)}
+              onError={() => setQrLoadError(true)}
             />
+            {qrLoadError ? (
+              <p className="max-w-xs text-center text-xs text-destructive">
+                QR did not load (404 or timeout). Tap <strong>Refresh status</strong>{" "}
+                or <strong>Start linking session</strong> again. On free hosting,
+                WhatsApp may block headless browsers — try again or run the
+                automation service locally with a visible browser.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>
