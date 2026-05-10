@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -429,13 +429,17 @@ class WhatsAppSessionManager:
             # Rows often appear a moment after the chat-list shell mounts.
             try:
                 WebDriverWait(driver, 25).until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR, '#pane-side a[href*="/chat/"]')
+                    lambda d: len(
+                        d.find_elements(
+                            By.CSS_SELECTOR,
+                            '[data-testid="cell-frame-container"]',
+                        )
                     )
+                    >= 1
                 )
             except Exception:
                 log.info(
-                    "list_chats no_chat_links_yet business_id=%s (will still scrape)",
+                    "list_chats no_chat_rows_yet business_id=%s (will still scrape)",
                     self._business_id,
                 )
 
@@ -467,12 +471,20 @@ class WhatsAppSessionManager:
 
     @staticmethod
     def _jid_from_chat_href(url: str) -> Optional[str]:
-        if "/chat/" not in url:
+        if "/chat/" not in url and "chat/" not in url:
             return None
         try:
-            path = urlparse(url).path
+            # Full URL or path-only (SPA sometimes uses relative paths).
+            if "http" in url:
+                path = urlparse(url).path
+            else:
+                path = url.split("?", 1)[0]
+            if "/chat/" not in path and path.startswith("chat/"):
+                path = "/" + path
+            if "/chat/" not in path:
+                return None
             raw = path.split("/chat/", 1)[1].split("/", 1)[0]
-            jid = unquote(raw).split("?", 1)[0].strip()
+            jid = unquote(unquote(raw)).split("?", 1)[0].strip()
             if not jid:
                 return None
             if jid.endswith("@g.us"):
@@ -480,6 +492,105 @@ class WhatsAppSessionManager:
             return jid
         except Exception:
             return None
+
+    @staticmethod
+    def _normalize_jid_candidate(raw: str) -> Optional[str]:
+        raw = (raw or "").strip()
+        if not raw or raw.endswith("@g.us"):
+            return None
+        if "@" in raw:
+            return raw
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 8:
+            return f"{digits}@c.us"
+        return None
+
+    @classmethod
+    def _jid_from_row_html_fragment(cls, html: str) -> Optional[str]:
+        """
+        WhatsApp often omits <a href> on list rows; JID may still appear in markup
+        (data attrs, inline paths, percent-encoded).
+        """
+        if not html:
+            return None
+        snippet = html[:450_000]
+        patterns = (
+            r'(?:https?://(?:web\.)?whatsapp\.com)?/chat/([^"\'\\&<>\s]+)',
+            r'(?:\\?/|%2F)chat(?:\\?/|%2F)([^"\'\\&<>\s]+)',
+        )
+        for pat in patterns:
+            for m in re.finditer(pat, snippet, flags=re.I):
+                token = m.group(1).strip()
+                token = unquote(unquote(token)).split("?")[0].split("#")[0]
+                if not token or ".." in token:
+                    continue
+                jid = cls._normalize_jid_candidate(token)
+                if jid:
+                    return jid
+        for m in re.finditer(
+            r'(?:phone|PHONE)(?:=|%3D)(\d{10,15})(?:\D|$)', snippet
+        ):
+            jid = cls._normalize_jid_candidate(m.group(1))
+            if jid:
+                return jid
+        for m in re.finditer(
+            r'\b(\d{10,20}@[cs]\.(?:us|whatsapp\.net))\b', snippet, flags=re.I
+        ):
+            jid = cls._normalize_jid_candidate(m.group(1))
+            if jid:
+                return jid
+        for m in re.finditer(
+            r'["\']([A-Za-z0-9.\-+]+@(c\.us|s\.whatsapp\.net|lid))["\']',
+            snippet,
+            flags=re.I,
+        ):
+            cand = m.group(1)
+            if cand.endswith("@g.us"):
+                continue
+            jid = cls._normalize_jid_candidate(cand)
+            if jid:
+                return jid
+        return None
+
+    @classmethod
+    def _jid_from_cell_row_deep(cls, row: Any) -> Optional[str]:
+        """Resolve chat JID when the row is not wrapped in a classic <a href=/chat/…>."""
+        href_selectors = (
+            'a[href*="/chat/"]',
+            'a[href*="chat/"]',
+            '[href*="/chat/"]',
+            '[href*="chat/"]',
+            'a[href*="send?phone="]',
+            '[href*="send?phone="]',
+            'a[href*="phone="]',
+        )
+        for sel in href_selectors:
+            try:
+                for el in row.find_elements(By.CSS_SELECTOR, sel):
+                    href = (el.get_attribute("href") or "").strip()
+                    if not href:
+                        continue
+                    jid = cls._jid_from_chat_href(href)
+                    if jid:
+                        return jid
+                    if "phone=" in href.lower():
+                        try:
+                            q = parse_qs(urlparse(href).query)
+                            for key in ("phone", "text"):
+                                vals = q.get(key)
+                                if vals and re.fullmatch(
+                                    r"\d{10,15}", (vals[0] or "").strip()
+                                ):
+                                    return f"{vals[0].strip()}@c.us"
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        try:
+            html = row.get_attribute("outerHTML") or ""
+        except Exception:
+            html = ""
+        return cls._jid_from_row_html_fragment(html)
 
     @staticmethod
     def _scroll_chat_pane_to_end(driver: webdriver.Chrome) -> None:
@@ -523,14 +634,14 @@ class WhatsAppSessionManager:
         try:
             pane_links = len(
                 driver.find_elements(
-                    By.CSS_SELECTOR, '#pane-side a[href*="/chat/"]'
+                    By.CSS_SELECTOR, '#pane-side [href*="/chat/"]'
                 )
             )
         except Exception:
             pane_links = -1
         try:
             any_chat_links = len(
-                driver.find_elements(By.CSS_SELECTOR, 'a[href*="/chat/"]')
+                driver.find_elements(By.CSS_SELECTOR, '[href*="/chat/"]')
             )
         except Exception:
             any_chat_links = -1
@@ -571,15 +682,21 @@ class WhatsAppSessionManager:
         for row in rows:
             try:
                 link_el = None
-                for sel in ('a[href*="/chat/"]', '[role="row"] a[href*="/chat/"]'):
+                for sel in (
+                    'a[href*="/chat/"]',
+                    '[href*="/chat/"]',
+                    '[role="row"] a[href*="/chat/"]',
+                ):
                     found = row.find_elements(By.CSS_SELECTOR, sel)
                     if found:
                         link_el = found[0]
                         break
-                if link_el is None:
-                    continue
-                href = (link_el.get_attribute("href") or "").strip()
-                jid = self._jid_from_chat_href(href)
+                jid: Optional[str] = None
+                if link_el is not None:
+                    href = (link_el.get_attribute("href") or "").strip()
+                    jid = self._jid_from_chat_href(href)
+                if not jid:
+                    jid = self._jid_from_cell_row_deep(row)
                 if not jid or jid.endswith("@g.us"):
                     continue
 
@@ -625,13 +742,24 @@ class WhatsAppSessionManager:
             return
         root = roots[0]
         try:
-            links = root.find_elements(By.CSS_SELECTOR, 'a[href*="/chat/"]')
+            links = root.find_elements(
+                By.CSS_SELECTOR,
+                'a[href*="/chat/"], [href*="/chat/"], a[href*="send?phone="]',
+            )
         except Exception:
             return
         for link in links:
             try:
                 href = (link.get_attribute("href") or "").strip()
                 jid = self._jid_from_chat_href(href)
+                if not jid and "phone=" in href.lower():
+                    try:
+                        q = parse_qs(urlparse(href).query)
+                        ph = (q.get("phone") or [None])[0]
+                        if ph and re.fullmatch(r"\d{10,15}", ph.strip()):
+                            jid = f"{ph.strip()}@c.us"
+                    except Exception:
+                        pass
                 if not jid or jid.endswith("@g.us"):
                     continue
                 if jid in out:
