@@ -45,8 +45,9 @@ def _use_headless() -> bool:
 
 
 def _click_fallback_enabled() -> bool:
-    v = os.environ.get("WHATSAPP_CHAT_LIST_CLICK_FALLBACK", "1").strip().lower()
-    return v not in ("0", "false", "no", "off")
+    """Slow / unreliable; only when explicitly enabled."""
+    v = os.environ.get("WHATSAPP_CHAT_LIST_CLICK_FALLBACK", "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
 
 
 def _should_open_link_tab() -> bool:
@@ -439,14 +440,406 @@ class WhatsAppSessionManager:
         u = (url or "").lower()
         return "/chat/" in u or "send?phone=" in u
 
-    @staticmethod
-    def _sidebar_has_titled_chat_rows(driver: webdriver.Chrome) -> bool:
-        for row in driver.find_elements(
-            By.CSS_SELECTOR, '[data-testid="cell-frame-container"]'
+    # Structural selectors only — WhatsApp changes class names frequently.
+    _SIDEBAR_ROW_SELECTORS: Tuple[str, ...] = (
+        '[data-testid="cell-frame-container"]',
+        '[data-testid="cell-frame"]',
+        '#pane-side [role="row"]',
+        '#pane-side [role="listitem"]',
+        '[data-testid="chat-list"] [role="row"]',
+        '[data-testid="chat-list"] [role="listitem"]',
+        '#pane-side a[href*="/chat/"]',
+        '#pane-side a[href*="send?phone="]',
+    )
+
+    def _gather_sidebar_candidate_rows(
+        self, driver: webdriver.Chrome
+    ) -> Tuple[List[Any], Dict[str, int]]:
+        seen: set[int] = set()
+        rows: List[Any] = []
+        counts: Dict[str, int] = {}
+        for sel in self._SIDEBAR_ROW_SELECTORS:
+            found = driver.find_elements(By.CSS_SELECTOR, sel)
+            counts[sel] = len(found)
+            for row in found:
+                try:
+                    rid = id(row)
+                except Exception:
+                    continue
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                rows.append(row)
+        return rows, counts
+
+    def _extract_row_display_name(self, row: Any) -> str:
+        try:
+            title_els = row.find_elements(
+                By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'
+            )
+            for el in title_els[:2]:
+                tit = (el.get_attribute("title") or "").strip()
+                txt = (el.text or "").strip()
+                pick = tit if len(tit) >= len(txt) else txt
+                if pick:
+                    return pick.split("\n")[0].strip()
+        except Exception:
+            pass
+        try:
+            for el in row.find_elements(By.CSS_SELECTOR, "[title]"):
+                tit = (el.get_attribute("title") or "").strip()
+                if tit and len(tit) >= 2 and not tit.lower().startswith("http"):
+                    return tit.split("\n")[0].strip()
+        except Exception:
+            pass
+        label = (row.get_attribute("aria-label") or "").strip()
+        if label:
+            return label.split("\n")[0].strip()
+        try:
+            bits = (row.text or "").strip().split("\n")
+            if bits:
+                return bits[0].strip()
+        except Exception:
+            pass
+        return ""
+
+    def _is_real_contact_sidebar_row(self, row: Any) -> bool:
+        """
+        Skip list shells and skeleton rows: require visible identity-like text
+        (name, phone-shaped digits, etc.).
+        """
+        try:
+            if not row.is_displayed():
+                return False
+        except Exception:
+            return False
+        try:
+            if (row.get_attribute("aria-busy") or "").lower() == "true":
+                return False
+        except Exception:
+            pass
+        name_text = self._extract_row_display_name(row)
+        if not name_text:
+            return False
+        t = name_text.strip()
+        tl = t.lower()
+        if tl in ("loading", "loading…", "loading...", "archived", "archived chats"):
+            return False
+        if re.fullmatch(r"[.\u2026…\s]+", t):
+            return False
+        letters = sum(1 for c in t if c.isalpha())
+        digits_in = "".join(c for c in t if c.isdigit())
+        if letters >= 1:
+            return True
+        if len(digits_in) >= 8:
+            return True
+        if len(t) >= 3 and re.search(
+            r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0400-\u04FF]", t
         ):
-            if row.find_elements(By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'):
-                return True
+            return True
         return False
+
+    def _try_merge_sidebar_row(
+        self, row: Any, out: Dict[str, Dict[str, Any]]
+    ) -> bool:
+        if not self._is_real_contact_sidebar_row(row):
+            return False
+        try:
+            link_el = None
+            for sel in (
+                'a[href*="/chat/"]',
+                '[href*="/chat/"]',
+                '[role="row"] a[href*="/chat/"]',
+            ):
+                found = row.find_elements(By.CSS_SELECTOR, sel)
+                if found:
+                    link_el = found[0]
+                    break
+            jid: Optional[str] = None
+            if link_el is not None:
+                href = (link_el.get_attribute("href") or "").strip()
+                jid = self._jid_from_chat_href(href)
+            if not jid:
+                jid = self._jid_from_cell_row_deep(row)
+            if not jid or jid.endswith("@g.us"):
+                return False
+
+            digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
+            name = self._extract_row_display_name(row)
+            prev_el = row.find_elements(
+                By.CSS_SELECTOR, '[data-testid="last-msg-status"]'
+            )
+            preview = (prev_el[0].text or "").strip() if prev_el else ""
+
+            meta_el = row.find_elements(
+                By.CSS_SELECTOR, '[data-testid="cell-frame-meta"]'
+            )
+            meta_text = ""
+            meta_title_attr = ""
+            if meta_el:
+                meta_text = (meta_el[0].text or "").strip()
+                meta_title_attr = (
+                    meta_el[0].get_attribute("title") or ""
+                ).strip()
+
+            last_ms = self._parse_sidebar_time(meta_text, meta_title_attr)
+            display_name = name or ("+" + digits if digits else "Contact")
+
+            out[jid] = {
+                "chat_jid": jid,
+                "phone_digits": digits,
+                "display_name": display_name,
+                "last_message_preview": preview,
+                "last_message_at_ms": last_ms or 0,
+            }
+            return True
+        except Exception:
+            return False
+
+    def _wait_for_real_sidebar_chats(
+        self, driver: webdriver.Chrome, timeout: float = 90.0
+    ) -> Tuple[int, Dict[str, int]]:
+        deadline = time.time() + timeout
+        last_counts: Dict[str, int] = {}
+        while time.time() < deadline:
+            rows, counts = self._gather_sidebar_candidate_rows(driver)
+            last_counts = counts
+            real_n = sum(
+                1 for r in rows if self._is_real_contact_sidebar_row(r)
+            )
+            if real_n > 0:
+                log.info(
+                    "list_chats real_rows_ready business_id=%s real_rows=%s "
+                    "raw_candidates=%s selector_counts=%s",
+                    self._business_id,
+                    real_n,
+                    len(rows),
+                    counts,
+                )
+                return real_n, counts
+            time.sleep(0.55)
+        rows, counts = self._gather_sidebar_candidate_rows(driver)
+        real_n = sum(1 for r in rows if self._is_real_contact_sidebar_row(r))
+        log.warning(
+            "list_chats real_rows_timeout business_id=%s real_rows=%s "
+            "raw_candidates=%s selector_counts=%s",
+            self._business_id,
+            real_n,
+            len(rows),
+            counts,
+        )
+        return real_n, counts
+
+    @staticmethod
+    def _get_sidebar_scroll_state(driver: webdriver.Chrome) -> Dict[str, Any]:
+        try:
+            return driver.execute_script(
+                """
+                const pane = document.querySelector('#pane-side');
+                const chatList = document.querySelector('[data-testid="chat-list"]');
+                const roots = [];
+                if (pane) roots.push(pane);
+                if (chatList && chatList !== pane) roots.push(chatList);
+                if (!roots.length) {
+                  return {scrollTop:0, scrollHeight:0, clientHeight:0,
+                          atEnd:true, node:'missing'};
+                }
+                let best = null;
+                let bestScore = 0;
+                for (let r = 0; r < roots.length; r++) {
+                  const root = roots[r];
+                  const nodes = root.querySelectorAll(
+                    'div[tabindex="-1"], div[tabindex="0"], div');
+                  for (let i = 0; i < nodes.length; i++) {
+                    const n = nodes[i];
+                    const sh = n.scrollHeight, ch = n.clientHeight;
+                    if (sh > ch + 40 && sh > bestScore) {
+                      bestScore = sh;
+                      best = n;
+                    }
+                  }
+                }
+                if (!best) best = pane || roots[0];
+                const st = best.scrollTop, sh = best.scrollHeight,
+                      ch = best.clientHeight;
+                const scrollable = sh > ch + 8;
+                return {
+                  scrollTop: st,
+                  scrollHeight: sh,
+                  clientHeight: ch,
+                  atEnd: !scrollable || (st + ch >= sh - 10),
+                  node: (best === pane) ? 'pane' : 'inner'
+                };
+                """
+            )
+        except Exception:
+            return {
+                "scrollTop": 0,
+                "scrollHeight": 0,
+                "clientHeight": 0,
+                "atEnd": True,
+                "node": "error",
+            }
+
+    @staticmethod
+    def _set_sidebar_scroll_top(driver: webdriver.Chrome, y: float) -> None:
+        try:
+            driver.execute_script(
+                """
+                const pane = document.querySelector('#pane-side');
+                const chatList = document.querySelector('[data-testid="chat-list"]');
+                const roots = [];
+                if (pane) roots.push(pane);
+                if (chatList && chatList !== pane) roots.push(chatList);
+                if (!roots.length) return;
+                let best = null;
+                let bestScore = 0;
+                for (let r = 0; r < roots.length; r++) {
+                  const root = roots[r];
+                  const nodes = root.querySelectorAll(
+                    'div[tabindex="-1"], div[tabindex="0"], div');
+                  for (let i = 0; i < nodes.length; i++) {
+                    const n = nodes[i];
+                    const sh = n.scrollHeight, ch = n.clientHeight;
+                    if (sh > ch + 40 && sh > bestScore) {
+                      bestScore = sh;
+                      best = n;
+                    }
+                  }
+                }
+                if (!best) best = pane || roots[0];
+                best.scrollTop = arguments[0];
+                """,
+                y,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _scroll_sidebar_step(driver: webdriver.Chrome, delta: int) -> None:
+        try:
+            driver.execute_script(
+                """
+                const pane = document.querySelector('#pane-side');
+                const chatList = document.querySelector('[data-testid="chat-list"]');
+                const roots = [];
+                if (pane) roots.push(pane);
+                if (chatList && chatList !== pane) roots.push(chatList);
+                if (!roots.length) return;
+                let best = null;
+                let bestScore = 0;
+                for (let r = 0; r < roots.length; r++) {
+                  const root = roots[r];
+                  const nodes = root.querySelectorAll(
+                    'div[tabindex="-1"], div[tabindex="0"], div');
+                  for (let i = 0; i < nodes.length; i++) {
+                    const n = nodes[i];
+                    const sh = n.scrollHeight, ch = n.clientHeight;
+                    if (sh > ch + 40 && sh > bestScore) {
+                      bestScore = sh;
+                      best = n;
+                    }
+                  }
+                }
+                if (!best) best = pane || roots[0];
+                const d = arguments[0];
+                best.scrollTop = Math.min(best.scrollTop + d, best.scrollHeight);
+                """,
+                delta,
+            )
+        except Exception:
+            pass
+
+    def _collect_chats_with_virtual_scroll(
+        self,
+        driver: webdriver.Chrome,
+        out: Dict[str, Dict[str, Any]],
+        max_passes: Optional[int] = None,
+    ) -> None:
+        pause = float(os.environ.get("WHATSAPP_CHAT_SCROLL_PAUSE_SEC", "0.38"))
+        if max_passes is None:
+            max_passes = int(
+                os.environ.get(
+                    "WHATSAPP_CHAT_SCROLL_MAX_PASSES",
+                    "140",
+                )
+            )
+        self._set_sidebar_scroll_top(driver, 0)
+        time.sleep(pause)
+
+        stable_rounds = 0
+        last_total = -1
+        stuck_rounds = 0
+        for pass_num in range(max_passes):
+            rows, counts = self._gather_sidebar_candidate_rows(driver)
+            real_rows = [r for r in rows if self._is_real_contact_sidebar_row(r)]
+            merged_this_pass = 0
+            for row in real_rows:
+                if self._try_merge_sidebar_row(row, out):
+                    merged_this_pass += 1
+            merged_after = len(out)
+            st = self._get_sidebar_scroll_state(driver)
+            log.info(
+                "list_chats scroll_pass business_id=%s pass=%s/%s "
+                "scroll_top=%s scroll_h=%s client_h=%s at_end=%s "
+                "real_visible=%s merged_this_pass=%s unique_total=%s "
+                "selector_counts=%s",
+                self._business_id,
+                pass_num,
+                max_passes - 1,
+                st.get("scrollTop"),
+                st.get("scrollHeight"),
+                st.get("clientHeight"),
+                st.get("atEnd"),
+                len(real_rows),
+                merged_this_pass,
+                merged_after,
+                counts,
+            )
+            if merged_after == last_total:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            last_total = merged_after
+            if st.get("atEnd") and stable_rounds >= 4:
+                log.info(
+                    "list_chats scroll_stop business_id=%s reason=at_end_stable "
+                    "passes=%s unique=%s",
+                    self._business_id,
+                    pass_num + 1,
+                    merged_after,
+                )
+                break
+            ch = int(st.get("clientHeight") or 500)
+            step = max(100, int(ch * 0.72))
+            top_before = float(st.get("scrollTop") or 0)
+            self._scroll_sidebar_step(driver, step)
+            time.sleep(pause)
+            st_after = self._get_sidebar_scroll_state(driver)
+            top_after = float(st_after.get("scrollTop") or 0)
+            if abs(top_after - top_before) < 3:
+                stuck_rounds += 1
+            else:
+                stuck_rounds = 0
+            if stuck_rounds >= 6:
+                log.info(
+                    "list_chats scroll_stop business_id=%s reason=scroll_top_stuck "
+                    "passes=%s unique=%s",
+                    self._business_id,
+                    pass_num + 1,
+                    merged_after,
+                )
+                break
+
+        log.info(
+            "list_chats scroll_collection_done business_id=%s unique_chats=%s",
+            self._business_id,
+            len(out),
+        )
+
+    def _sidebar_has_titled_chat_rows(self, driver: webdriver.Chrome) -> bool:
+        rows, _ = self._gather_sidebar_candidate_rows(driver)
+        return any(self._is_real_contact_sidebar_row(r) for r in rows)
 
     def _enrich_chats_via_row_clicks(
         self,
@@ -454,10 +847,10 @@ class WhatsAppSessionManager:
         out: Dict[str, Dict[str, Any]],
     ) -> None:
         """
-        WhatsApp sometimes renders the sidebar without extractable /chat/ URLs.
-        Open each row, read JID from the location bar, return to the home list.
+        Last resort when DOM exposes no /chat/ URLs. Disabled by default
+        (WHATSAPP_CHAT_LIST_CLICK_FALLBACK).
         """
-        max_rows = int(os.environ.get("WHATSAPP_CHAT_CLICK_MAX", "40"))
+        max_rows = int(os.environ.get("WHATSAPP_CHAT_CLICK_MAX", "5"))
         try:
             cur = driver.current_url or ""
             if WhatsAppSessionManager._chrome_url_has_thread(cur):
@@ -624,37 +1017,28 @@ class WhatsAppSessionManager:
             except Exception:
                 pass
 
-            # Rows often appear a moment after the chat-list shell mounts.
-            try:
-                WebDriverWait(driver, 25).until(
-                    lambda d: len(
-                        d.find_elements(
-                            By.CSS_SELECTOR,
-                            '[data-testid="cell-frame-container"]',
-                        )
-                    )
-                    >= 1
-                )
-            except Exception:
-                log.info(
-                    "list_chats no_chat_rows_yet business_id=%s (will still scrape)",
-                    self._business_id,
-                )
+            # Wait for real contact rows, not an empty virtualized shell.
+            self._wait_for_real_sidebar_chats(driver)
 
             aggregated: Dict[str, Dict[str, Any]] = {}
-            for _round in range(max(1, scroll_rounds)):
-                self._capture_chat_rows(driver, aggregated)
-                self._capture_chat_rows_from_pane_links(driver, aggregated)
-                self._scroll_chat_pane_to_end(driver)
-                time.sleep(0.22)
+            env_scroll = os.environ.get(
+                "WHATSAPP_CHAT_SCROLL_MAX_PASSES", ""
+            ).strip()
+            if env_scroll.isdigit():
+                scroll_cap = int(env_scroll)
+            else:
+                scroll_cap = max(72, scroll_rounds * 4)
+            self._collect_chats_with_virtual_scroll(
+                driver, aggregated, max_passes=scroll_cap
+            )
 
-            self._capture_chat_rows(driver, aggregated)
             self._capture_chat_rows_from_pane_links(driver, aggregated)
 
             if not aggregated and _click_fallback_enabled():
                 if self._sidebar_has_titled_chat_rows(driver):
-                    log.info(
-                        "list_chats using_click_fallback business_id=%s",
+                    log.warning(
+                        "list_chats using_click_fallback business_id=%s "
+                        "(set WHATSAPP_CHAT_LIST_CLICK_FALLBACK=0 to disable)",
                         self._business_id,
                     )
                     self._enrich_chats_via_row_clicks(driver, aggregated)
@@ -868,74 +1252,9 @@ class WhatsAppSessionManager:
     def _capture_chat_rows(
         self, driver: webdriver.Chrome, out: Dict[str, Dict[str, Any]]
     ) -> None:
-        row_selectors = (
-            '[data-testid="cell-frame-container"]',
-            '[data-testid="cell-frame"]',
-            '#pane-side [role="row"]',
-        )
-        rows: List[Any] = []
-        seen_el: set[int] = set()
-        for sel in row_selectors:
-            for row in driver.find_elements(By.CSS_SELECTOR, sel):
-                try:
-                    rid = id(row)
-                except Exception:
-                    continue
-                if rid in seen_el:
-                    continue
-                seen_el.add(rid)
-                rows.append(row)
+        rows, _ = self._gather_sidebar_candidate_rows(driver)
         for row in rows:
-            try:
-                link_el = None
-                for sel in (
-                    'a[href*="/chat/"]',
-                    '[href*="/chat/"]',
-                    '[role="row"] a[href*="/chat/"]',
-                ):
-                    found = row.find_elements(By.CSS_SELECTOR, sel)
-                    if found:
-                        link_el = found[0]
-                        break
-                jid: Optional[str] = None
-                if link_el is not None:
-                    href = (link_el.get_attribute("href") or "").strip()
-                    jid = self._jid_from_chat_href(href)
-                if not jid:
-                    jid = self._jid_from_cell_row_deep(row)
-                if not jid or jid.endswith("@g.us"):
-                    continue
-
-                digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
-                title_el = row.find_elements(By.CSS_SELECTOR, '[data-testid="cell-frame-title"]')
-                name = ""
-                if title_el:
-                    name = (title_el[0].text or "").strip()
-
-                prev_el = row.find_elements(By.CSS_SELECTOR, '[data-testid="last-msg-status"]')
-                preview = ""
-                if prev_el:
-                    preview = (prev_el[0].text or "").strip()
-
-                meta_el = row.find_elements(By.CSS_SELECTOR, '[data-testid="cell-frame-meta"]')
-                meta_text = ""
-                meta_title_attr = ""
-                if meta_el:
-                    meta_text = (meta_el[0].text or "").strip()
-                    meta_title_attr = (meta_el[0].get_attribute("title") or "").strip()
-
-                last_ms = self._parse_sidebar_time(meta_text, meta_title_attr)
-                display_name = name or ("+" + digits if digits else "Contact")
-
-                out[jid] = {
-                    "chat_jid": jid,
-                    "phone_digits": digits,
-                    "display_name": display_name,
-                    "last_message_preview": preview,
-                    "last_message_at_ms": last_ms or 0,
-                }
-            except Exception:
-                continue
+            self._try_merge_sidebar_row(row, out)
 
     def _capture_chat_rows_from_pane_links(
         self, driver: webdriver.Chrome, out: Dict[str, Dict[str, Any]]
