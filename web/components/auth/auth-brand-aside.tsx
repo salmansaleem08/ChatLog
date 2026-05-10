@@ -1,6 +1,8 @@
 import Image from "next/image";
 import { Check } from "lucide-react";
 
+import { AuthSideCharts } from "@/components/marketing/analytics-previews";
+
 export function AuthBrandAside() {
   return (
     <div className="relative hidden min-h-[50vh] flex-col justify-between overflow-hidden bg-secondary p-8 text-secondary-foreground lg:flex lg:min-h-0 lg:h-full lg:p-10">
@@ -51,6 +53,7 @@ export function AuthBrandAside() {
             </li>
           ))}
         </ul>
+        <AuthSideCharts />
       </div>
 
       <p className="relative z-10 text-xs text-secondary-foreground/70">

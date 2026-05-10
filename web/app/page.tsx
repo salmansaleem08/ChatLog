@@ -11,6 +11,7 @@ import {
   SplitSquareVertical,
 } from "lucide-react";
 
+import { LandingAnalyticsShowcase } from "@/components/marketing/analytics-previews";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -166,6 +167,8 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        <LandingAnalyticsShowcase />
 
         <section
           id="how-it-works"

@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 
 import { AuthBrandAside } from "@/components/auth/auth-brand-aside";
+import { AuthMobileCharts } from "@/components/marketing/analytics-previews";
 import { AuthFormPanel } from "@/components/auth/auth-form-panel";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +42,7 @@ export default function SignUpPage() {
             Sign up to turn chats into structured orders, live stock, and calm
             customer updates.
           </p>
+          <AuthMobileCharts />
         </div>
       </div>
 

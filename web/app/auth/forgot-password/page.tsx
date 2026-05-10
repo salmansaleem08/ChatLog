@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { MiniSparkline } from "@/components/marketing/analytics-previews";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,15 @@ export default function ForgotPasswordPage() {
         >
           Back to sign in
         </Link>
+        <div
+          className="rounded-xl border border-border bg-muted/50 px-4 py-3"
+          aria-hidden
+        >
+          <p className="mb-2 text-left text-xs font-medium text-muted-foreground">
+            Activity while you were away (sample)
+          </p>
+          <MiniSparkline className="h-10 w-full text-primary" />
+        </div>
       </div>
     </div>
   );

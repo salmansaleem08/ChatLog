@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 
 import { AuthBrandAside } from "@/components/auth/auth-brand-aside";
+import { AuthMobileCharts } from "@/components/marketing/analytics-previews";
 import { AuthFormPanel } from "@/components/auth/auth-form-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +41,7 @@ export default function LoginPage() {
             Sign in to see every order extracted from your chats, stock that stays
             accurate, and customer updates that send themselves.
           </p>
+          <AuthMobileCharts />
         </div>
       </div>
 
