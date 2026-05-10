@@ -1,14 +1,17 @@
-# Render Blueprint — set repository root and connect GitHub in the Render dashboard.
-# Python service: use a virtual environment locally; Render installs from requirements.txt.
+# Render Blueprint — connect repo in dashboard; free tier has no persistent disk.
+#
+# WhatsApp service: use runtime docker so Chromium + chromedriver are installed.
+# dockerfilePath / dockerContext are relative to the repository root (see Render docs).
 
 services:
   - type: web
     name: chatlog-whatsapp-service
-    runtime: python
+    runtime: docker
     rootDir: whatsapp-service
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: whatsapp-service/Dockerfile
+    dockerContext: whatsapp-service
     healthCheckPath: /health
-    # Add in Render dashboard (do not commit values):
-    # CHATLOG_AUTOMATION_SECRET — shared with Vercel CHATLOG_AUTOMATION_SECRET
-    # WHATSAPP_SESSION_DIR — persistent disk path for Chrome profiles (recommended)
+    # Dashboard env (never commit values):
+    # CHATLOG_AUTOMATION_SECRET — same as Vercel
+    # Optional WHATSAPP_SESSION_DIR — omit on free tier; app uses /tmp (sessions lost on restart)
+    # Render sets RENDER=true automatically on their platform

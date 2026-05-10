@@ -1,8 +1,9 @@
 """
-Per-business WhatsApp Web sessions: isolated Chrome profiles under WHATSAPP_SESSION_DIR/<uuid>.
+Per-business WhatsApp Web sessions: isolated profiles under <session_base>/<uuid>.
 
-Requires Chrome/Chromium + driver (Selenium Manager). On Render: RENDER=true (headless).
-QR pairing in headless can be unreliable; prefer local visible Chrome for first scan when possible.
+Use Chromium + chromedriver from the environment (Dockerfile sets CHROME_BIN /
+CHROMEDRIVER_PATH). Selenium Manager fallback applies locally if paths unset.
+On Render: RENDER=true → headless. Ephemeral /tmp profiles on free tier (no disk).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 
 WA_URL = "https://web.whatsapp.com/"
@@ -29,9 +31,24 @@ def _use_headless() -> bool:
 
 
 def _session_base_dir() -> str:
+    """
+    Prefer WHATSAPP_SESSION_DIR when set and writable (paid Render disk, local path).
+    On Render without a disk, /var/data/... often fails — fall back to /tmp (ephemeral).
+    """
     base = os.environ.get("WHATSAPP_SESSION_DIR", "").strip()
     if base:
-        return os.path.abspath(base)
+        path = os.path.abspath(base)
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError:
+            pass
+
+    if os.environ.get("RENDER"):
+        path = os.path.abspath("/tmp/chatlog_whatsapp_sessions")
+        os.makedirs(path, exist_ok=True)
+        return path
+
     return os.path.abspath(
         os.path.join(os.path.dirname(__file__), "data", "whatsapp_sessions")
     )
@@ -64,15 +81,25 @@ class WhatsAppSessionManager:
 
     def _new_driver(self) -> webdriver.Chrome:
         opts = ChromeOptions()
+        chrome_bin = os.environ.get("CHROME_BIN", "").strip()
+        if chrome_bin:
+            opts.binary_location = chrome_bin
+
         opts.add_argument(f"--user-data-dir={self._user_data_dir()}")
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--disable-software-rasterizer")
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--window-size=1280,840")
         if _use_headless():
             opts.add_argument("--headless=new")
 
-        return webdriver.Chrome(options=opts)
+        driver_path = os.environ.get("CHROMEDRIVER_PATH", "").strip()
+        service = (
+            Service(executable_path=driver_path) if driver_path else Service()
+        )
+        return webdriver.Chrome(service=service, options=opts)
 
     def ensure_started(self) -> None:
         with self._lock:

@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { automationConfigured, automationFetch } from "@/lib/chatlog-automation";
+
+/** Render cold start + Chromium can exceed default Vercel limit. */
+export const maxDuration = 60;
 import { createClient } from "@/lib/supabase/server";
 import { syncWhatsappProfile } from "@/lib/whatsapp-profile-sync";
 
@@ -41,8 +44,11 @@ export async function POST() {
           ? detail
           : Array.isArray(detail)
             ? JSON.stringify(detail)
-            : "Start failed";
-      return NextResponse.json({ error: msg }, { status: 502 });
+            : JSON.stringify(body) || "Upstream request failed";
+      return NextResponse.json(
+        { error: msg, serviceConfigured: true, upstreamStatus: res.status },
+        { status: 502 }
+      );
     }
 
     const remote = {
@@ -71,6 +77,15 @@ export async function POST() {
         { status: 503 }
       );
     }
-    throw e;
+    const message =
+      e instanceof Error ? e.message : "Could not reach automation service";
+    return NextResponse.json(
+      {
+        error: message,
+        serviceConfigured: true,
+        code: "upstream_unreachable",
+      },
+      { status: 502 }
+    );
   }
 }
