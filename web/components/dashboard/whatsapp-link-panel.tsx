@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 
 import { saveWhatsAppPhoneE164 } from "@/app/dashboard/settings/actions";
 import { Button } from "@/components/ui/button";
@@ -42,6 +44,7 @@ export function WhatsAppLinkPanel({
   initialPhone: string | null;
   initialRecognizedPhone?: string | null;
 }) {
+  const router = useRouter();
   const [status, setStatus] = useState<WhatsappLinkStatus>(initialStatus);
   const [phone, setPhone] = useState(initialPhone ?? "");
   const [remote, setRemote] = useState<StatusPayload | null>(null);
@@ -52,6 +55,9 @@ export function WhatsAppLinkPanel({
   const [qrBlobUrl, setQrBlobUrl] = useState<string | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrFetchError, setQrFetchError] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
     setError(null);
@@ -111,6 +117,42 @@ export function WhatsAppLinkPanel({
       await refreshStatus();
     } finally {
       setLoadingStart(false);
+    }
+  }
+
+  async function disconnectWhatsApp() {
+    setDisconnecting(true);
+    setDisconnectError(null);
+    try {
+      const res = await fetch("/api/whatsapp/session/disconnect", {
+        method: "POST",
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setDisconnectError(data.error ?? "Could not disconnect. Try again.");
+        return;
+      }
+      setStatus("disconnected");
+      setRemote((r) =>
+        r
+          ? {
+              ...r,
+              whatsapp_link_status: "disconnected",
+              logged_in: false,
+              running: false,
+              needs_qr: false,
+              recognizedPhone: null,
+            }
+          : r
+      );
+      setDisconnectOpen(false);
+      setQrBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      router.refresh();
+    } finally {
+      setDisconnecting(false);
     }
   }
 
@@ -334,6 +376,22 @@ export function WhatsAppLinkPanel({
           >
             Refresh status
           </Button>
+          {serviceConfigured &&
+          (status === "connected" ||
+            status === "awaiting_scan" ||
+            status === "session_lost") ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full border-destructive/35 text-destructive hover:bg-destructive/10 hover:text-destructive sm:w-auto"
+              onClick={() => {
+              setDisconnectError(null);
+              setDisconnectOpen(true);
+            }}
+            >
+              Disconnect WhatsApp…
+            </Button>
+          ) : null}
         </div>
 
         {showQr ? (
@@ -373,6 +431,47 @@ export function WhatsAppLinkPanel({
           </div>
         ) : null}
       </div>
+
+      <AlertDialog.Root open={disconnectOpen} onOpenChange={setDisconnectOpen}>
+        <AlertDialog.Portal>
+          <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-foreground/20 backdrop-blur-[2px]" />
+          <AlertDialog.Popup className="fixed inset-0 z-50 mx-auto flex min-h-[100vh] items-center justify-center px-4 py-16">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-lg">
+              <AlertDialog.Title className="text-lg font-semibold tracking-tight">
+                Disconnect WhatsApp?
+              </AlertDialog.Title>
+              <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                ChatLog will sign out of the paired WhatsApp Web session on the computer
+                that runs pairing and clear its saved login for this workspace. You can
+                connect again anytime with <strong>Connect WhatsApp</strong>.
+              </AlertDialog.Description>
+              {disconnectError ? (
+                <p className="mt-3 text-sm text-destructive" role="alert">
+                  {disconnectError}
+                </p>
+              ) : null}
+              <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={disconnecting}
+                  onClick={() => setDisconnectOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={disconnecting}
+                  onClick={() => void disconnectWhatsApp()}
+                >
+                  {disconnecting ? "Disconnecting…" : "Disconnect"}
+                </Button>
+              </div>
+            </div>
+          </AlertDialog.Popup>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
     </section>
   );
 }

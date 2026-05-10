@@ -77,6 +77,26 @@ def whatsapp_session_start(
     return {"ok": True, "business_id": bid, **status}
 
 
+@app.post("/whatsapp/session/disconnect")
+def whatsapp_session_disconnect(
+    business_id: str = Query(..., min_length=32, max_length=64),
+    wipe_profile: bool = Query(True),
+    _: Any = Depends(require_automation_secret),
+) -> dict:
+    """Close the browser session and optionally delete the on-disk Chrome profile."""
+    try:
+        bid = normalize_business_id(business_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid business_id") from exc
+    get_manager(bid).disconnect(wipe_profile=wipe_profile)
+    log.info(
+        "session_disconnect_ok business_id=%s wipe_profile=%s",
+        bid,
+        wipe_profile,
+    )
+    return {"ok": True, "business_id": bid, "wiped": wipe_profile}
+
+
 @app.get("/whatsapp/session/status")
 def whatsapp_session_status(
     business_id: str = Query(..., min_length=32, max_length=64),

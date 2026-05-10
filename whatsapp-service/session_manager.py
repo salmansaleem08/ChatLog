@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -41,6 +42,11 @@ def _use_headless() -> bool:
     if os.environ.get("RENDER"):
         return True
     return os.environ.get("HEADLESS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _click_fallback_enabled() -> bool:
+    v = os.environ.get("WHATSAPP_CHAT_LIST_CLICK_FALLBACK", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
 
 
 def _should_open_link_tab() -> bool:
@@ -216,6 +222,37 @@ class WhatsAppSessionManager:
                 log.warning(
                     "link_tab failed business_id=%s", self._business_id, exc_info=True
                 )
+
+    def disconnect(self, wipe_profile: bool = True) -> None:
+        """Quit the browser and optionally delete on-disk Chrome profile for this workspace."""
+        with self._lock:
+            if self._driver is not None:
+                try:
+                    self._driver.quit()
+                except Exception:
+                    pass
+                self._driver = None
+            self._linked_phone_cached = None
+            self._linked_phone_cached_at = 0.0
+            if wipe_profile:
+                p = self._user_data_dir()
+                try:
+                    shutil.rmtree(p, ignore_errors=True)
+                except OSError as exc:
+                    log.warning(
+                        "disconnect rmtree failed business_id=%s err=%s",
+                        self._business_id,
+                        exc,
+                    )
+                try:
+                    os.makedirs(p, exist_ok=True)
+                except OSError:
+                    pass
+            log.info(
+                "session_disconnected business_id=%s wiped=%s",
+                self._business_id,
+                wipe_profile,
+            )
 
     def get_status(self) -> Dict[str, Any]:
         with self._lock:
@@ -397,6 +434,167 @@ class WhatsAppSessionManager:
         )
         raise RuntimeError("chat_list_timeout")
 
+    @staticmethod
+    def _chrome_url_has_thread(url: str) -> bool:
+        u = (url or "").lower()
+        return "/chat/" in u or "send?phone=" in u
+
+    @staticmethod
+    def _sidebar_has_titled_chat_rows(driver: webdriver.Chrome) -> bool:
+        for row in driver.find_elements(
+            By.CSS_SELECTOR, '[data-testid="cell-frame-container"]'
+        ):
+            if row.find_elements(By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'):
+                return True
+        return False
+
+    def _enrich_chats_via_row_clicks(
+        self,
+        driver: webdriver.Chrome,
+        out: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """
+        WhatsApp sometimes renders the sidebar without extractable /chat/ URLs.
+        Open each row, read JID from the location bar, return to the home list.
+        """
+        max_rows = int(os.environ.get("WHATSAPP_CHAT_CLICK_MAX", "40"))
+        try:
+            cur = driver.current_url or ""
+            if WhatsAppSessionManager._chrome_url_has_thread(cur):
+                driver.get(WA_URL)
+                time.sleep(0.7)
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, '[data-testid="chat-list"]')
+                    )
+                )
+        except Exception:
+            pass
+
+        idx = 0
+        failures = 0
+        while idx < max_rows and failures < 12:
+            try:
+                rows = driver.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-container"]'
+                )
+                titled = [
+                    r
+                    for r in rows
+                    if r.find_elements(
+                        By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'
+                    )
+                ]
+                if idx >= len(titled):
+                    break
+                row = titled[idx]
+
+                title_el = row.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'
+                )
+                name = (title_el[0].text or "").strip() if title_el else ""
+                prev_el = row.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="last-msg-status"]'
+                )
+                preview = (prev_el[0].text or "").strip() if prev_el else ""
+                meta_el = row.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-meta"]'
+                )
+                meta_text = ""
+                meta_title_attr = ""
+                if meta_el:
+                    meta_text = (meta_el[0].text or "").strip()
+                    meta_title_attr = (
+                        meta_el[0].get_attribute("title") or ""
+                    ).strip()
+                last_ms = self._parse_sidebar_time(meta_text, meta_title_attr) or 0
+
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+                    row,
+                )
+                time.sleep(0.15)
+                driver.execute_script("arguments[0].click();", row)
+                try:
+                    WebDriverWait(driver, 12).until(
+                        lambda d: WhatsAppSessionManager._chrome_url_has_thread(
+                            d.current_url or ""
+                        )
+                    )
+                except Exception:
+                    failures += 1
+                    idx += 1
+                    driver.get(WA_URL)
+                    time.sleep(0.6)
+                    try:
+                        WebDriverWait(driver, 18).until(
+                            EC.presence_of_element_located(
+                                (
+                                    By.CSS_SELECTOR,
+                                    '[data-testid="chat-list"]',
+                                )
+                            )
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+                cur_url = driver.current_url or ""
+                jid = self._jid_from_chat_href(cur_url)
+                if not jid and "phone=" in cur_url.lower():
+                    try:
+                        q = parse_qs(urlparse(cur_url).query)
+                        ph = (q.get("phone") or [None])[0]
+                        if ph and re.fullmatch(r"\d{10,15}", ph.strip()):
+                            jid = f"{ph.strip()}@c.us"
+                    except Exception:
+                        pass
+                driver.get(WA_URL)
+                time.sleep(0.75)
+                try:
+                    WebDriverWait(driver, 20).until(
+                        EC.presence_of_element_located(
+                            (By.CSS_SELECTOR, '[data-testid="chat-list"]')
+                        )
+                    )
+                except Exception:
+                    pass
+
+                idx += 1
+                if not jid or jid.endswith("@g.us"):
+                    continue
+                if jid in out:
+                    continue
+                digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
+                display_name = name or ("+" + digits if digits else "Contact")
+                out[jid] = {
+                    "chat_jid": jid,
+                    "phone_digits": digits,
+                    "display_name": display_name,
+                    "last_message_preview": preview,
+                    "last_message_at_ms": last_ms or 0,
+                }
+                log.info(
+                    "click_fallback captured jid=%s idx=%s",
+                    jid.split("@")[0][:20],
+                    idx - 1,
+                )
+            except Exception:
+                failures += 1
+                idx += 1
+                log.warning("click_fallback row_error", exc_info=True)
+                try:
+                    driver.get(WA_URL)
+                    time.sleep(0.6)
+                except Exception:
+                    pass
+
+        log.info(
+            "click_fallback done business_id=%s count=%s",
+            self._business_id,
+            len(out),
+        )
+
     def list_chats(self, scroll_rounds: int = 32) -> List[Dict[str, Any]]:
         with self._lock:
             driver = self._driver
@@ -452,6 +650,14 @@ class WhatsAppSessionManager:
 
             self._capture_chat_rows(driver, aggregated)
             self._capture_chat_rows_from_pane_links(driver, aggregated)
+
+            if not aggregated and _click_fallback_enabled():
+                if self._sidebar_has_titled_chat_rows(driver):
+                    log.info(
+                        "list_chats using_click_fallback business_id=%s",
+                        self._business_id,
+                    )
+                    self._enrich_chats_via_row_clicks(driver, aggregated)
 
             chats: List[Dict[str, Any]] = list(aggregated.values())
 
