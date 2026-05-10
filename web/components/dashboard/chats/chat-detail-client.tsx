@@ -10,11 +10,15 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { interpretChatThread } from "@/lib/chat-analyze-client";
+import {
+  fetchThreadMessagesSnapshot,
+  interpretChatThread,
+  type ThreadMessageBubble,
+} from "@/lib/chat-analyze-client";
 import { formatMoneyAmount } from "@/lib/inventory/money-format";
 import { toNumber } from "@/lib/inventory/helpers";
 import { cn } from "@/lib/utils";
@@ -29,12 +33,6 @@ type LineVm = {
   aiVariant: string;
   matchedProduct?: string | null;
   matchedVariantAttrs?: Record<string, string> | null;
-};
-
-type ChatBubbleVm = {
-  role: "customer" | "business";
-  text: string;
-  timestampIso: string;
 };
 
 function bubbleTimeLabel(iso: string): string {
@@ -139,7 +137,8 @@ export function ChatDetailClient({
 
   const [convLoading, setConvLoading] = useState(true);
   const [convError, setConvError] = useState<string | null>(null);
-  const [convMessages, setConvMessages] = useState<ChatBubbleVm[]>([]);
+  const [convMessages, setConvMessages] = useState<ThreadMessageBubble[]>([]);
+  const convBottomRef = useRef<HTMLDivElement | null>(null);
 
   const { matchedLines, reviewLines } = useMemo(() => {
     const matchedLines = lines.filter((l) => !l.unresolved);
@@ -160,24 +159,13 @@ export function ChatDetailClient({
     setConvLoading(true);
     setConvError(null);
     try {
-      const res = await fetch(
-        `/api/whatsapp/chat-threads/${threadId}/messages`,
-        { method: "GET" }
-      );
-      const body = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-        messages?: ChatBubbleVm[];
-      };
-      if (!res.ok || body.ok !== true) {
-        setConvError(
-          body.error ??
-            "We couldn’t load this conversation. Try again in a moment."
-        );
+      const snap = await fetchThreadMessagesSnapshot(threadId);
+      if (!snap.ok) {
+        setConvError(snap.message);
         setConvMessages([]);
         return;
       }
-      setConvMessages(Array.isArray(body.messages) ? body.messages : []);
+      setConvMessages(snap.messages);
     } catch {
       setConvError(
         "Something went wrong while loading messages. Check your connection and try again."
@@ -191,6 +179,11 @@ export function ChatDetailClient({
   useEffect(() => {
     void loadConversation();
   }, [loadConversation]);
+
+  useEffect(() => {
+    if (convLoading || convMessages.length === 0) return;
+    convBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [convLoading, convMessages]);
 
   async function confirmDeleteInterpretation() {
     setDeletePending(true);
@@ -405,7 +398,7 @@ export function ChatDetailClient({
             <div className="flex max-h-[min(52vh,520px)] flex-col gap-2 overflow-y-auto px-3 py-4 sm:px-5">
               {convMessages.map((m, i) => (
                 <div
-                  key={`${m.timestampIso}-${i}`}
+                  key={`${m.timestampIso}-${i}-${m.text.slice(0, 24)}`}
                   className={cn(
                     "flex w-full",
                     m.role === "business" ? "justify-end" : "justify-start"
@@ -429,6 +422,7 @@ export function ChatDetailClient({
                   </div>
                 </div>
               ))}
+              <div ref={convBottomRef} className="h-px w-full shrink-0" aria-hidden />
             </div>
           )}
         </div>

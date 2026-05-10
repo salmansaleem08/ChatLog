@@ -3,8 +3,17 @@
  * serverless execution limits (~60s on hobby): snapshot messages, then AI + DB.
  */
 
-/** Per-request budget slightly under common 60s platform caps. */
-export const CHAT_ANALYZE_STEP_TIMEOUT_MS = 55_000;
+/** WhatsApp snapshot from automation — keep under route budget headroom. */
+export const CHAT_SNAPSHOT_TIMEOUT_MS = 58_000;
+
+/** AI + DB step — same ceiling so the client stops waiting before the platform does. */
+export const CHAT_ANALYZE_STEP_TIMEOUT_MS = 58_000;
+
+export type ThreadMessageBubble = {
+  role: "customer" | "business";
+  text: string;
+  timestampIso: string;
+};
 
 function abortedMessage(): string {
   return "This step took too long and was stopped. Try again in a moment.";
@@ -14,40 +23,83 @@ function networkMessage(): string {
   return "Something went wrong. Check your connection and try again.";
 }
 
-export type InterpretThreadResult =
-  | { ok: true }
+/** Build a single transcript line-per-message when the scraper omits `transcript`. */
+export function buildTranscriptFromMessages(
+  messages: ThreadMessageBubble[]
+): string {
+  const lines: string[] = [];
+  for (const m of messages) {
+    const role = m.role === "business" ? "You" : "Customer";
+    const text = (m.text ?? "").trim();
+    if (!text) continue;
+    const ts =
+      typeof m.timestampIso === "string" && m.timestampIso.length > 0
+        ? m.timestampIso
+        : "";
+    lines.push(ts ? `[${ts}] ${role}: ${text}` : `${role}: ${text}`);
+  }
+  return lines.join("\n").trim();
+}
+
+function mergeAbortSignals(
+  outer: AbortSignal | undefined,
+  ms: number
+): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  const cancelTimer = () => clearTimeout(timer);
+
+  const abortMerged = () => {
+    cancelTimer();
+    controller.abort();
+  };
+
+  if (outer) {
+    if (outer.aborted) {
+      abortMerged();
+      return controller.signal;
+    }
+    outer.addEventListener("abort", abortMerged, { once: true });
+  }
+
+  return controller.signal;
+}
+
+export type ThreadSnapshotResult =
+  | {
+      ok: true;
+      transcript: string;
+      latestMessageIso: string;
+      messages: ThreadMessageBubble[];
+    }
   | { ok: false; message: string };
 
 /**
- * Loads conversation text from the messaging snapshot endpoint, then runs
- * interpretation (AI + persistence) in a second request.
+ * Fetches one conversation snapshot (same payload used by Analyze step 1 and the detail UI).
  */
-export async function interpretChatThread(
-  threadId: string
-): Promise<InterpretThreadResult> {
+export async function fetchThreadMessagesSnapshot(
+  threadId: string,
+  options?: { signal?: AbortSignal }
+): Promise<ThreadSnapshotResult> {
   const snapshotUrl = `/api/whatsapp/chat-threads/${threadId}/messages`;
-  const analyzeUrl = `/api/whatsapp/chat-threads/${threadId}/analyze`;
-
-  const acSnap = new AbortController();
-  const snapTimer = setTimeout(
-    () => acSnap.abort(),
-    CHAT_ANALYZE_STEP_TIMEOUT_MS
+  const signal = mergeAbortSignals(
+    options?.signal,
+    CHAT_SNAPSHOT_TIMEOUT_MS
   );
+
   let snapRes: Response;
   try {
     snapRes = await fetch(snapshotUrl, {
       method: "GET",
-      signal: acSnap.signal,
+      signal,
       cache: "no-store",
     });
   } catch (e) {
-    clearTimeout(snapTimer);
     if (e instanceof Error && e.name === "AbortError") {
       return { ok: false, message: abortedMessage() };
     }
     return { ok: false, message: networkMessage() };
   }
-  clearTimeout(snapTimer);
 
   let snapJson: Record<string, unknown>;
   try {
@@ -58,8 +110,7 @@ export async function interpretChatThread(
   } catch {
     return {
       ok: false,
-      message:
-        "We couldn’t read the server response. Try again.",
+      message: "We couldn’t read the server response. Try again.",
     };
   }
 
@@ -71,8 +122,56 @@ export async function interpretChatThread(
     return { ok: false, message: err };
   }
 
-  const transcript =
-    typeof snapJson.transcript === "string" ? snapJson.transcript.trim() : "";
+  if (snapJson.ok !== true) {
+    const err =
+      typeof snapJson.error === "string" && snapJson.error.trim().length > 0
+        ? snapJson.error.trim()
+        : "We couldn’t load this conversation. Try again shortly.";
+    return { ok: false, message: err };
+  }
+
+  const rawMessages = Array.isArray(snapJson.messages)
+    ? snapJson.messages
+    : [];
+  const messages: ThreadMessageBubble[] = [];
+  for (const item of rawMessages) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const role =
+      o.role === "business"
+        ? "business"
+        : o.role === "customer"
+          ? "customer"
+          : "customer";
+    const text =
+      typeof o.text === "string"
+        ? o.text.trim()
+        : String(o.text ?? "").trim();
+    const timestampIso =
+      typeof o.timestampIso === "string"
+        ? o.timestampIso.trim()
+        : typeof o.timestamp_iso === "string"
+          ? o.timestamp_iso.trim()
+          : "";
+    if (!text) continue;
+    messages.push({
+      role,
+      text,
+      timestampIso:
+        timestampIso ||
+        new Date().toISOString(),
+    });
+  }
+
+  let transcript =
+    typeof snapJson.transcript === "string"
+      ? snapJson.transcript.trim()
+      : "";
+
+  if (!transcript && messages.length > 0) {
+    transcript = buildTranscriptFromMessages(messages);
+  }
+
   const latestRaw =
     typeof snapJson.latestMessageIso === "string"
       ? snapJson.latestMessageIso.trim()
@@ -86,6 +185,31 @@ export async function interpretChatThread(
     };
   }
 
+  return {
+    ok: true,
+    transcript,
+    latestMessageIso: latestRaw,
+    messages,
+  };
+}
+
+export type InterpretThreadResult =
+  | { ok: true }
+  | { ok: false; message: string };
+
+/**
+ * Loads conversation snapshot, then runs interpretation (AI + persistence).
+ */
+export async function interpretChatThread(
+  threadId: string
+): Promise<InterpretThreadResult> {
+  const analyzeUrl = `/api/whatsapp/chat-threads/${threadId}/analyze`;
+
+  const snap = await fetchThreadMessagesSnapshot(threadId);
+  if (!snap.ok) {
+    return snap;
+  }
+
   const acAnalyze = new AbortController();
   const analyzeTimer = setTimeout(
     () => acAnalyze.abort(),
@@ -97,8 +221,8 @@ export async function interpretChatThread(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        transcript,
-        latestMessageIso: latestRaw,
+        transcript: snap.transcript,
+        latestMessageIso: snap.latestMessageIso,
       }),
       signal: acAnalyze.signal,
       cache: "no-store",
@@ -121,8 +245,7 @@ export async function interpretChatThread(
   } catch {
     return {
       ok: false,
-      message:
-        "We couldn’t read the server response. Try again.",
+      message: "We couldn’t read the server response. Try again.",
     };
   }
 

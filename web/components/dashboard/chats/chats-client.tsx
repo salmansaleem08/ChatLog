@@ -93,35 +93,42 @@ export function ChatsClient({
     message: string;
   } | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    setWarning(null);
-    setDiagnostics(null);
-    setCopiedDiag(false);
-    setLoading(true);
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setError(null);
+      setWarning(null);
+      setDiagnostics(null);
+      setCopiedDiag(false);
+      setLoading(true);
+    }
     try {
       const res = await fetch("/api/whatsapp/chats");
       const data = (await res.json()) as ChatsPayload;
       if (!res.ok) {
-        setError(
-          data.error ??
-            "We couldn’t load conversations. Try again in a few minutes."
-        );
-        setRows([]);
-        if (data.diagnostics?.correlationId) {
-          setDiagnostics(data.diagnostics);
+        if (!silent) {
+          setError(
+            data.error ??
+              "We couldn’t load conversations. Try again in a few minutes."
+          );
+          setRows([]);
+          if (data.diagnostics?.correlationId) {
+            setDiagnostics(data.diagnostics);
+          }
         }
         return;
       }
-      if (typeof data.warning === "string" && data.warning.trim().length > 0) {
-        setWarning(data.warning);
-      }
-      if (
-        data.diagnostics &&
-        typeof data.diagnostics === "object" &&
-        typeof data.diagnostics.correlationId === "string"
-      ) {
-        setDiagnostics(data.diagnostics);
+      if (!silent) {
+        if (typeof data.warning === "string" && data.warning.trim().length > 0) {
+          setWarning(data.warning);
+        }
+        if (
+          data.diagnostics &&
+          typeof data.diagnostics === "object" &&
+          typeof data.diagnostics.correlationId === "string"
+        ) {
+          setDiagnostics(data.diagnostics);
+        }
       }
       if (typeof data.whatsapp_link_status === "string") {
         const s = data.whatsapp_link_status;
@@ -136,7 +143,9 @@ export function ChatsClient({
       }
       setRows(Array.isArray(data.chats) ? data.chats : []);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -184,7 +193,7 @@ export function ChatsClient({
       } finally {
         setBusyThread(null);
       }
-      void load();
+      void load({ silent: true });
       router.refresh();
     },
     [load, router]
