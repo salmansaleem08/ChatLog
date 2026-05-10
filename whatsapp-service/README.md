@@ -37,7 +37,9 @@ If Chrome is not detected, set:
 CHROME_BIN=/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
 ```
 
-## Run the API
+## Run the API (do this **before** `npm run dev`)
+
+If you skip this step, the web app will show **502** and `fetch failed` — Next.js cannot open WhatsApp; only this service can.
 
 ```bash
 cd /Users/testuser/Documents/ChatLog/whatsapp-service
@@ -45,7 +47,13 @@ source .venv/bin/activate
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) → `{"status":"ok"}`.
+Verify from any terminal:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+→ `{"status":"ok"}` (should return immediately). If it hangs or errors, fix this before using Settings → WhatsApp.
 
 ## Run the Next.js app (separate terminal)
 
