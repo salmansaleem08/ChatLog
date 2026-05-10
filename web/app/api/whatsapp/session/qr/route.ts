@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { automationConfigured, automationFetch } from "@/lib/chatlog-automation";
+import {
+  automationConfigured,
+  automationFetch,
+  describeAutomationReachabilityError,
+} from "@/lib/chatlog-automation";
 import { createClient } from "@/lib/supabase/server";
 
 export const maxDuration = 60;
@@ -42,8 +46,9 @@ export async function GET() {
     ) {
       return NextResponse.json({ error: "Not configured" }, { status: 503 });
     }
-    const message =
-      e instanceof Error ? e.message : "Could not reach automation service";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json(
+      { error: describeAutomationReachabilityError(e) },
+      { status: 502 }
+    );
   }
 }

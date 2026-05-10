@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { automationConfigured, automationFetch } from "@/lib/chatlog-automation";
+import {
+  automationConfigured,
+  automationFetch,
+  describeAutomationReachabilityError,
+} from "@/lib/chatlog-automation";
 
 export const maxDuration = 60;
 import { createClient } from "@/lib/supabase/server";
@@ -82,11 +86,9 @@ export async function GET() {
         { status: 503 }
       );
     }
-    const message =
-      e instanceof Error ? e.message : "Could not reach automation service";
     return NextResponse.json(
       {
-        error: message,
+        error: describeAutomationReachabilityError(e),
         serviceConfigured: true,
         code: "upstream_unreachable",
       },

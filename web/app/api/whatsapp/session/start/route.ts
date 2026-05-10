@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 
-import { automationConfigured, automationFetch } from "@/lib/chatlog-automation";
+import {
+  automationConfigured,
+  automationFetch,
+  describeAutomationReachabilityError,
+} from "@/lib/chatlog-automation";
+import { createClient } from "@/lib/supabase/server";
+import { syncWhatsappProfile } from "@/lib/whatsapp-profile-sync";
 
 /** Render cold start + Chromium can exceed default Vercel limit. */
 export const maxDuration = 60;
-import { createClient } from "@/lib/supabase/server";
-import { syncWhatsappProfile } from "@/lib/whatsapp-profile-sync";
 
 export async function POST() {
   const supabase = createClient();
@@ -77,11 +81,9 @@ export async function POST() {
         { status: 503 }
       );
     }
-    const message =
-      e instanceof Error ? e.message : "Could not reach automation service";
     return NextResponse.json(
       {
-        error: message,
+        error: describeAutomationReachabilityError(e),
         serviceConfigured: true,
         code: "upstream_unreachable",
       },
