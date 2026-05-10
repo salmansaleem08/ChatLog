@@ -87,6 +87,10 @@ export function ChatsClient({
     useState<WhatsappLinkStatus>(initialLinkStatus);
   const [search, setSearch] = useState("");
   const [busyThread, setBusyThread] = useState<string | null>(null);
+  const [analyzeRowError, setAnalyzeRowError] = useState<{
+    threadId: string;
+    message: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -158,6 +162,7 @@ export function ChatsClient({
         return;
       }
       setBusyThread(threadId);
+      setAnalyzeRowError(null);
       setError(null);
       try {
         const res = await fetch(
@@ -166,17 +171,26 @@ export function ChatsClient({
         );
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         if (!res.ok) {
-          setError(
-            body.error ??
-              "We couldn’t interpret this chat yet. Try again in a moment."
-          );
+          setAnalyzeRowError({
+            threadId,
+            message:
+              body.error ??
+              "We couldn’t finish interpreting this thread. Try again shortly.",
+          });
           return;
         }
-        await load();
-        router.refresh();
+      } catch {
+        setAnalyzeRowError({
+          threadId,
+          message:
+            "Something went wrong. Check your connection and try again.",
+        });
+        return;
       } finally {
         setBusyThread(null);
       }
+      void load();
+      router.refresh();
     },
     [load, router]
   );
@@ -405,6 +419,7 @@ export function ChatsClient({
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        setAnalyzeRowError(null);
                         void analyze(r.threadId);
                       }}
                     >
@@ -420,9 +435,17 @@ export function ChatsClient({
                         </>
                       )}
                     </Button>
-                    {!r.canAnalyze && r.threadId ? (
+                    {!r.canAnalyze && r.threadId && r.lastAnalyzedAt ? (
                       <p className="text-center text-[0.625rem] leading-tight text-muted-foreground">
-                        Up to date{analyzedLabel ? ` · ${analyzedLabel}` : ""}
+                        Analyzed · {analyzedLabel ?? "—"}
+                      </p>
+                    ) : null}
+                    {analyzeRowError?.threadId === r.threadId ? (
+                      <p
+                        className="text-center text-[0.625rem] leading-snug text-destructive"
+                        role="alert"
+                      >
+                        {analyzeRowError.message}
                       </p>
                     ) : null}
                   </div>

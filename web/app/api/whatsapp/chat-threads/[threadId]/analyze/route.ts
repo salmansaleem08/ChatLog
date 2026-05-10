@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import {
   automationConfigured,
-  automationFetch,
+  automationFetchLong,
   describeAutomationReachabilityError,
 } from "@/lib/chatlog-automation";
 import { loadInventoryCatalogVariants } from "@/lib/inventory/catalogue-loader";
@@ -13,8 +13,14 @@ import {
   type ParsedExtractionPayload,
 } from "@/lib/order-extractor";
 import { createClient } from "@/lib/supabase/server";
+import {
+  applyInventoryForInsertedLines,
+  REASON_RESTORE_BEFORE_REPLACE,
+  restoreInventoryForExtractionLines,
+  type ExtractionLineRow,
+} from "@/lib/whatsapp-extraction-stock";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(
   _request: Request,
@@ -65,7 +71,7 @@ export async function POST(
       business_id: user.id,
       chat_jid: String(thread.wa_chat_jid),
     }).toString();
-    const mr = await automationFetch(`/whatsapp/chat/messages?${qs}`, {
+    const mr = await automationFetchLong(`/whatsapp/chat/messages?${qs}`, {
       method: "GET",
     });
 
@@ -89,11 +95,19 @@ export async function POST(
       );
     }
   } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      return NextResponse.json(
+        {
+          error:
+            "Opening this chat took too long. Make sure this workspace is connected on your phone, then try again.",
+        },
+        { status: 504 }
+      );
+    }
     console.error("[analyze] message fetch", e);
     return NextResponse.json(
       {
-        error:
-          describeAutomationReachabilityError(e),
+        error: describeAutomationReachabilityError(e),
       },
       { status: 502 }
     );
@@ -107,7 +121,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "This chat has no readable messages yet. Try again after the customer writes something.",
+          "This chat has no readable messages yet. Try again after someone sends a message.",
       },
       { status: 422 }
     );
@@ -127,7 +141,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "There’s nothing new to extract since your last analysis. Wait for a new customer message or reset the analysis.",
+          "Everything is already up to date for this thread. When a new message arrives, you can run another interpretation.",
       },
       { status: 409 }
     );
@@ -140,7 +154,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "Add at least one product in Inventory before extracting orders from chats.",
+          "Add at least one product in Inventory before interpreting orders from conversations.",
       },
       { status: 422 }
     );
@@ -150,7 +164,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "Add at least one product in Inventory before extracting orders from chats.",
+          "Add at least one product in Inventory before interpreting orders from conversations.",
       },
       { status: 422 }
     );
@@ -172,7 +186,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "We couldn’t extract orders automatically right now. Try again in a few minutes.",
+          "We couldn’t interpret this conversation right now. Try again in a few minutes.",
       },
       { status: 502 }
     );
@@ -263,6 +277,32 @@ export async function POST(
     });
   }
 
+  const { data: priorLines, error: priorErr } = await supabase
+    .from("whatsapp_extracted_order_lines")
+    .select(
+      "id, product_variant_id, unresolved, quantity, stock_units_applied"
+    )
+    .eq("chat_thread_id", thread.id)
+    .eq("business_id", user.id);
+
+  if (priorErr) {
+    console.error("[analyze] load prior lines", priorErr);
+    return NextResponse.json(
+      { error: "We couldn’t update this interpretation. Try again." },
+      { status: 500 }
+    );
+  }
+
+  const typedPrior = (priorLines ?? []) as unknown as ExtractionLineRow[];
+  const restoreOld = await restoreInventoryForExtractionLines(
+    supabase,
+    typedPrior,
+    REASON_RESTORE_BEFORE_REPLACE
+  );
+  if (restoreOld.error) {
+    return NextResponse.json({ error: restoreOld.error }, { status: 422 });
+  }
+
   const { error: delErr } = await supabase
     .from("whatsapp_extracted_order_lines")
     .delete()
@@ -272,21 +312,43 @@ export async function POST(
   if (delErr) {
     console.error("[analyze] delete prior lines", delErr);
     return NextResponse.json(
-      { error: "We couldn’t save the analysis. Try again." },
+      { error: "We couldn’t save the interpretation. Try again." },
       { status: 500 }
     );
   }
 
   if (insertRows.length > 0) {
-    const { error: insErr } = await supabase
+    const { data: inserted, error: insErr } = await supabase
       .from("whatsapp_extracted_order_lines")
-      .insert(insertRows);
-    if (insErr) {
+      .insert(insertRows)
+      .select("id, product_variant_id, unresolved, quantity");
+
+    if (insErr || !inserted) {
       console.error("[analyze] insert lines", insErr);
       return NextResponse.json(
-        { error: "We couldn’t save the analysis. Try again." },
+        { error: "We couldn’t save the interpretation. Try again." },
         { status: 500 }
       );
+    }
+
+    const rowsForStock = inserted as {
+      id: string;
+      product_variant_id: string | null;
+      unresolved: boolean;
+      quantity: unknown;
+    }[];
+
+    const inv = await applyInventoryForInsertedLines(supabase, rowsForStock);
+    if (inv.error) {
+      const { error: rmErr } = await supabase
+        .from("whatsapp_extracted_order_lines")
+        .delete()
+        .eq("chat_thread_id", thread.id)
+        .eq("business_id", user.id);
+      if (rmErr) {
+        console.error("[analyze] cleanup lines after inventory failure", rmErr);
+      }
+      return NextResponse.json({ error: inv.error }, { status: 422 });
     }
   }
 
@@ -302,6 +364,10 @@ export async function POST(
 
   if (upThreadErr) {
     console.error("[analyze] update thread", upThreadErr);
+    return NextResponse.json(
+      { error: "We couldn’t save this thread’s status. Try again." },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({

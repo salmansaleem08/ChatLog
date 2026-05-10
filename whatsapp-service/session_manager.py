@@ -2096,6 +2096,7 @@ class WhatsAppSessionManager:
             )
 
             lines: List[str] = []
+            message_rows: List[Dict[str, Any]] = []
             latest_seen_ms = -1
 
             for c in containers[-max_messages:]:
@@ -2107,6 +2108,7 @@ class WhatsAppSessionManager:
                         )
                     )
                     role = "You" if out else "Customer"
+                    side = "business" if out else "customer"
 
                     spans = c.find_elements(
                         By.CSS_SELECTOR, "span.selectable-text.copyable-text span"
@@ -2135,6 +2137,26 @@ class WhatsAppSessionManager:
                         + (text or "").replace("\n", " ").strip()
                     ).strip()
                     lines.append(snippet)
+
+                    iso_one = datetime.fromtimestamp(
+                        ms / 1000, tz=timezone.utc
+                    ).isoformat()
+                    body_parts: List[str] = []
+                    if prefix:
+                        body_parts.append(prefix)
+                    if (text or "").strip():
+                        body_parts.append((text or "").strip())
+                    body = "\n".join(body_parts).strip()
+                    if not body:
+                        continue
+                    message_rows.append(
+                        {
+                            "role": side,
+                            "text": body,
+                            "timestamp_ms": ms,
+                            "timestamp_iso": iso_one,
+                        }
+                    )
                 except Exception:
                     continue
 
@@ -2147,6 +2169,7 @@ class WhatsAppSessionManager:
                 "chat_jid": normalized,
                 "transcript": transcript,
                 "latest_message_iso": latest_iso,
+                "messages": message_rows,
             }
 
 

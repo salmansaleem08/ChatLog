@@ -65,3 +65,24 @@ export async function automationFetch(
     },
   });
 }
+
+/**
+ * Long-running automation calls (e.g. open chat + read history in browser).
+ * Aborts if the request exceeds the timeout to avoid the client waiting forever.
+ */
+export async function automationFetchLong(
+  path: string,
+  init?: Omit<RequestInit, "signal">,
+  timeoutMs: number = 280_000
+): Promise<Response> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await automationFetch(path, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(t);
+  }
+}
