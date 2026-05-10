@@ -23,13 +23,8 @@ export const maxDuration = 60;
 
 const MAX_TRANSCRIPT_CHARS = 600_000;
 
-type AnalyzeBody = {
-  transcript?: unknown;
-  latestMessageIso?: unknown;
-};
-
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: { threadId: string } }
 ) {
   const threadId = params.threadId?.trim();
@@ -38,56 +33,6 @@ export async function POST(
     return NextResponse.json(
       { ok: false as const, error: "Missing chat." },
       { status: 400 }
-    );
-  }
-
-  let body: AnalyzeBody;
-  try {
-    body = (await request.json()) as AnalyzeBody;
-  } catch (e) {
-    console.error("[analyze] step=parse_json_body", {
-      threadId,
-      err: e instanceof Error ? e.message : String(e),
-    });
-    return NextResponse.json(
-      { ok: false as const, error: "Invalid request." },
-      { status: 400 }
-    );
-  }
-
-  const transcriptRaw =
-    typeof body.transcript === "string" ? body.transcript.trim() : "";
-  const latestIsoRaw =
-    typeof body.latestMessageIso === "string"
-      ? body.latestMessageIso.trim()
-      : "";
-
-  if (!transcriptRaw) {
-    console.error("[analyze] step=validate_body missing_transcript", {
-      threadId,
-      hadTranscriptKey: "transcript" in body,
-    });
-    return NextResponse.json(
-      {
-        ok: false as const,
-        error:
-          "No conversation text was sent. Refresh this page and try Analyze again.",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (transcriptRaw.length > MAX_TRANSCRIPT_CHARS) {
-    console.error("[analyze] step=validate_body transcript_too_large", {
-      threadId,
-      length: transcriptRaw.length,
-    });
-    return NextResponse.json(
-      {
-        ok: false as const,
-        error: "This conversation is too long to process in one step.",
-      },
-      { status: 413 }
     );
   }
 
@@ -135,13 +80,15 @@ export async function POST(
     last_analyzed_at: string | null;
     extraction_watermark_at: string | null;
     last_message_at: string | null;
+    snapshot_transcript: string | null;
+    snapshot_latest_msg_at: string | null;
   } | null = null;
 
   try {
     const { data: row, error: threadErr } = await supabase
       .from("whatsapp_chat_threads")
       .select(
-        "id, business_id, last_analyzed_at, extraction_watermark_at, last_message_at"
+        "id, business_id, last_analyzed_at, extraction_watermark_at, last_message_at, snapshot_transcript, snapshot_latest_msg_at"
       )
       .eq("id", threadId)
       .eq("business_id", userId!)
@@ -173,7 +120,7 @@ export async function POST(
         { status: 404 }
       );
     }
-    thread = row;
+    thread = row as unknown as typeof thread;
   } catch (e) {
     console.error("[analyze] step=load_thread_throw", {
       threadId,
@@ -186,7 +133,40 @@ export async function POST(
     );
   }
 
-  const transcript = transcriptRaw;
+  // Transcript comes from the snapshot stored by the GET /messages step.
+  const transcript = (thread!.snapshot_transcript ?? "").trim();
+  const latestIsoRaw = thread!.snapshot_latest_msg_at
+    ? String(thread!.snapshot_latest_msg_at).trim()
+    : "";
+
+  if (!transcript) {
+    console.error("[analyze] step=validate_snapshot missing_transcript", {
+      threadId,
+    });
+    return NextResponse.json(
+      {
+        ok: false as const,
+        error:
+          "Please open this conversation to load its messages first, then click Analyze.",
+      },
+      { status: 422 }
+    );
+  }
+
+  if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+    console.error("[analyze] step=validate_snapshot transcript_too_large", {
+      threadId,
+      length: transcript.length,
+    });
+    return NextResponse.json(
+      {
+        ok: false as const,
+        error: "This conversation is too long to process in one step.",
+      },
+      { status: 413 }
+    );
+  }
+
   const latestMs = Date.parse(latestIsoRaw);
 
   if (!Number.isFinite(latestMs)) {

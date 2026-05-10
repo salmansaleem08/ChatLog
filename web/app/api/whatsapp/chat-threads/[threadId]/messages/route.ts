@@ -193,6 +193,25 @@ export async function GET(
         ? new Date(Date.parse(latestRaw)).toISOString()
         : null;
 
+    // Store the snapshot so the analyze step can read from DB without needing
+    // the client to pass the transcript back in the request body.
+    if (transcript) {
+      const { error: snapErr } = await supabase
+        .from("whatsapp_chat_threads")
+        .update({
+          snapshot_transcript: transcript,
+          snapshot_latest_msg_at: latestIso ?? new Date().toISOString(),
+        })
+        .eq("id", threadId)
+        .eq("business_id", userId!);
+      if (snapErr) {
+        console.error("[chat_messages] step=store_snapshot", {
+          threadId,
+          message: snapErr.message,
+        });
+      }
+    }
+
     console.info("[chat_messages] step=done_ok", {
       threadId,
       messageCount: messages.length,

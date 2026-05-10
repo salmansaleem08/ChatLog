@@ -197,18 +197,30 @@ export type InterpretThreadResult =
   | { ok: true }
   | { ok: false; message: string };
 
+export type AnalyzeStep = "fetching" | "analyzing";
+
 /**
- * Loads conversation snapshot, then runs interpretation (AI + persistence).
+ * Two-step interpretation:
+ *   1. GET /messages  — fetches from WhatsApp and stores snapshot in DB.
+ *   2. POST /analyze  — reads snapshot from DB, runs AI, persists results.
+ *
+ * `onStep` fires as each step begins so the caller can update UI labels.
+ * The function always resolves (never hangs): AbortController timeouts and
+ * network errors are caught and returned as { ok: false }.
  */
 export async function interpretChatThread(
-  threadId: string
+  threadId: string,
+  options?: { onStep?: (step: AnalyzeStep) => void }
 ): Promise<InterpretThreadResult> {
   const analyzeUrl = `/api/whatsapp/chat-threads/${threadId}/analyze`;
 
+  options?.onStep?.("fetching");
   const snap = await fetchThreadMessagesSnapshot(threadId);
   if (!snap.ok) {
     return snap;
   }
+
+  options?.onStep?.("analyzing");
 
   const acAnalyze = new AbortController();
   const analyzeTimer = setTimeout(
@@ -217,13 +229,12 @@ export async function interpretChatThread(
   );
   let annRes: Response;
   try {
+    // No transcript in body — the analyze route reads it from the DB snapshot
+    // stored by the GET /messages step above.
     annRes = await fetch(analyzeUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        transcript: snap.transcript,
-        latestMessageIso: snap.latestMessageIso,
-      }),
+      body: JSON.stringify({}),
       signal: acAnalyze.signal,
       cache: "no-store",
     });

@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { interpretChatThread } from "@/lib/chat-analyze-client";
+import { interpretChatThread, type AnalyzeStep } from "@/lib/chat-analyze-client";
 import { cn } from "@/lib/utils";
 import type { WhatsappLinkStatus } from "@/lib/whatsapp-profile-sync";
 
@@ -88,6 +88,7 @@ export function ChatsClient({
     useState<WhatsappLinkStatus>(initialLinkStatus);
   const [search, setSearch] = useState("");
   const [busyThread, setBusyThread] = useState<string | null>(null);
+  const [busyThreadStep, setBusyThreadStep] = useState<AnalyzeStep | null>(null);
   const [analyzeRowError, setAnalyzeRowError] = useState<{
     threadId: string;
     message: string;
@@ -172,10 +173,13 @@ export function ChatsClient({
         return;
       }
       setBusyThread(threadId);
+      setBusyThreadStep(null);
       setAnalyzeRowError(null);
       setError(null);
       try {
-        const result = await interpretChatThread(threadId);
+        const result = await interpretChatThread(threadId, {
+          onStep: (step) => setBusyThreadStep(step),
+        });
         if (!result.ok) {
           setAnalyzeRowError({
             threadId,
@@ -192,6 +196,7 @@ export function ChatsClient({
         return;
       } finally {
         setBusyThread(null);
+        setBusyThreadStep(null);
       }
       void load({ silent: true });
       router.refresh();
@@ -430,7 +435,11 @@ export function ChatsClient({
                       {busyThread === r.threadId ? (
                         <>
                           <Loader2 className="mr-1.5 size-3.5 animate-spin sm:mr-2 sm:size-4" aria-hidden />
-                          Working…
+                          {busyThreadStep === "fetching"
+                            ? "Fetching…"
+                            : busyThreadStep === "analyzing"
+                              ? "Analyzing…"
+                              : "Working…"}
                         </>
                       ) : (
                         <>

@@ -253,37 +253,21 @@ export async function GET() {
     let storedLookup = new Map<string, StoredThreadRow>();
 
     if (rows.length > 0) {
-      const { data: stored, error: upErr } = await supabase
+      const { error: upErr } = await supabase
         .from("whatsapp_chat_threads")
         .upsert(rows, {
           onConflict: "business_id,wa_chat_jid",
-        })
-        .select(
-          [
-            "id",
-            "wa_chat_jid",
-            "phone_digits",
-            "contact_name",
-            "last_message_preview",
-            "last_analyzed_at",
-            "extraction_watermark_at",
-            "last_message_at",
-          ].join(",")
-        );
+        });
 
       if (upErr) {
         console.error("[whatsapp/chats] upsert threads failed", upErr);
-      } else if (stored) {
-        const typedStored = stored as unknown as StoredThreadRow[];
-        storedLookup = new Map(
-          typedStored.map((row) => [
-            row.wa_chat_jid as string,
-            row,
-          ])
-        );
       }
-    } else {
-      const { data: existing } = await supabase
+    }
+
+    // Always SELECT after upsert so storedLookup is populated even when the
+    // upsert fails or returns no data (e.g. RLS, constraint, or client quirk).
+    {
+      const { data: allStored } = await supabase
         .from("whatsapp_chat_threads")
         .select(
           [
@@ -298,12 +282,9 @@ export async function GET() {
           ].join(",")
         )
         .eq("business_id", user.id);
-      const typedExisting = (existing ?? []) as unknown as StoredThreadRow[];
+      const typedStored = (allStored ?? []) as unknown as StoredThreadRow[];
       storedLookup = new Map(
-        typedExisting.map((row) => [
-          row.wa_chat_jid as string,
-          row,
-        ])
+        typedStored.map((row) => [row.wa_chat_jid as string, row])
       );
     }
 

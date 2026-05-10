@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   fetchThreadMessagesSnapshot,
   interpretChatThread,
+  type AnalyzeStep,
   type ThreadMessageBubble,
 } from "@/lib/chat-analyze-client";
 import { formatMoneyAmount } from "@/lib/inventory/money-format";
@@ -130,6 +131,7 @@ export function ChatDetailClient({
 }) {
   const router = useRouter();
   const [busyAction, setBusyAction] = useState<null | "analyze">(null);
+  const [analyzeStep, setAnalyzeStep] = useState<AnalyzeStep | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
@@ -209,9 +211,12 @@ export function ChatDetailClient({
 
   async function runAnalyze() {
     setBusyAction("analyze");
+    setAnalyzeStep(null);
     setAnalyzeError(null);
     try {
-      const result = await interpretChatThread(threadId);
+      const result = await interpretChatThread(threadId, {
+        onStep: (step) => setAnalyzeStep(step),
+      });
       if (!result.ok) {
         setAnalyzeError(result.message);
         return;
@@ -224,6 +229,7 @@ export function ChatDetailClient({
       );
     } finally {
       setBusyAction(null);
+      setAnalyzeStep(null);
     }
   }
 
@@ -294,11 +300,20 @@ export function ChatDetailClient({
                 onClick={runAnalyze}
               >
                 {busyAction === "analyze" ? (
-                  <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                    {analyzeStep === "fetching"
+                      ? "Fetching…"
+                      : analyzeStep === "analyzing"
+                        ? "Analyzing…"
+                        : "Working…"}
+                  </>
                 ) : (
-                  <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
+                  <>
+                    <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
+                    Analyze
+                  </>
                 )}
-                Analyze
               </Button>
               {lastAnalyzedAt && !canAnalyze ? (
                 <p className="text-center text-[0.6875rem] leading-tight text-muted-foreground sm:text-left">
@@ -460,11 +475,20 @@ export function ChatDetailClient({
                 onClick={runAnalyze}
               >
                 {busyAction === "analyze" ? (
-                  <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                    {analyzeStep === "fetching"
+                      ? "Fetching…"
+                      : analyzeStep === "analyzing"
+                        ? "Analyzing…"
+                        : "Working…"}
+                  </>
                 ) : (
-                  <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
+                  <>
+                    <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
+                    Analyze
+                  </>
                 )}
-                Analyze
               </Button>
               {analyzeError ? (
                 <p className="max-w-md text-sm text-destructive" role="alert">
