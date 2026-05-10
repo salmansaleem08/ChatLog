@@ -4,7 +4,6 @@ import Image from "next/image";
 import Link from "next/link";
 
 import { AuthBrandAside } from "@/components/auth/auth-brand-aside";
-import { AuthDashboardPreview } from "@/components/marketing/analytics-previews";
 import { AuthFormPanel } from "@/components/auth/auth-form-panel";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,53 +13,49 @@ import { cn } from "@/lib/utils";
 
 export default function SignUpPage() {
   return (
-    <div className="min-h-screen bg-background lg:grid lg:h-screen lg:min-h-0 lg:grid-cols-[55fr_45fr] lg:overflow-hidden">
-      <div className="relative flex min-h-[280px] flex-col bg-secondary lg:hidden">
+    <div className="min-h-screen bg-background lg:grid lg:h-screen lg:min-h-0 lg:grid-cols-[11fr_9fr] lg:overflow-hidden">
+      <div className="relative flex min-h-[320px] flex-col bg-secondary lg:hidden">
         <div
-          className="pointer-events-none absolute -left-24 -top-24 rounded-full bg-primary opacity-10 blur-3xl"
-          style={{ width: 360, height: 360 }}
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-20%,var(--primary)_0%,transparent_55%)] opacity-20"
           aria-hidden
         />
-        <div
-          className="pointer-events-none absolute -bottom-20 -right-16 rounded-full bg-chart-3/35 opacity-50 blur-3xl"
-          style={{ width: 400, height: 400 }}
-          aria-hidden
-        />
-        <div className="relative z-10 flex flex-1 flex-col justify-center p-6">
+        <div className="relative z-10 flex flex-1 flex-col justify-center px-6 py-10">
           <Image
             src="/logo.png"
             alt="ChatLog"
-            width={40}
-            height={40}
-            className="mb-6 h-10 w-auto rounded-md object-contain"
+            width={44}
+            height={44}
+            className="mb-8 h-11 w-auto object-contain opacity-95"
             priority
           />
-          <h1 className="text-2xl font-bold leading-tight text-gradient-hero">
-            Your WhatsApp orders, finally organized.
-          </h1>
-          <p className="mt-3 text-sm text-secondary-foreground/85">
-            Sign up to turn chats into structured orders, live stock, and calm
-            customer updates.
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-secondary-foreground/55">
+            ChatLog
           </p>
-          <AuthDashboardPreview compact />
+          <h1 className="mt-4 text-balance text-3xl font-semibold leading-tight tracking-[-0.03em] text-secondary-foreground sm:text-4xl">
+            Run your WhatsApp store like a real operation.
+          </h1>
+          <p className="mt-4 max-w-md text-base leading-relaxed text-secondary-foreground/80 sm:text-lg">
+            Create your account and start turning chats into structured orders,
+            live inventory, and clear customer communication.
+          </p>
         </div>
       </div>
 
       <AuthBrandAside />
 
-      <div className="flex min-h-0 flex-col justify-center bg-background px-6 py-12 lg:h-full lg:py-0">
-        <AuthFormPanel className="mx-auto w-full max-w-sm">
-          <div className="flex flex-col gap-4">
+      <div className="flex min-h-0 flex-col justify-center bg-background px-6 py-14 lg:h-full lg:px-12 lg:py-0">
+        <AuthFormPanel className="mx-auto w-full max-w-[400px]">
+          <div className="flex flex-col gap-6">
             <div>
-              <h2 className="text-2xl font-bold tracking-tight">
+              <h2 className="text-2xl font-semibold tracking-tight">
                 Create your account
               </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Free forever. No credit card.
+              <p className="mt-2 text-base text-muted-foreground">
+                Free to start. No credit card required.
               </p>
             </div>
 
-            <form className="flex flex-col gap-4" noValidate>
+            <form className="flex flex-col gap-5" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="business-name">Business name</Label>
                 <Input
@@ -98,7 +93,7 @@ export default function SignUpPage() {
               </Button>
             </form>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
               <span className="h-px flex-1 bg-border" />
               <span className="text-xs font-medium text-muted-foreground">
                 or
@@ -132,7 +127,7 @@ export default function SignUpPage() {
               </Link>
             </p>
 
-            <p className="text-center text-xs text-muted-foreground leading-relaxed">
+            <p className="text-center text-xs leading-relaxed text-muted-foreground">
               By creating an account, you agree to our{" "}
               <Link
                 href="/terms"
