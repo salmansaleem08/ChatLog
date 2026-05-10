@@ -693,17 +693,23 @@ class WhatsAppSessionManager:
                 except Exception:
                     pass
 
-        jid = self._jid_from_dom_ancestor_attr_scan(driver, row)
-        if jid:
-            return jid, "ancestor_attrs", None
-
+        # Row subtree first — per-chat attrs. Ancestor walk was merging every row
+        # into the linked account id (e.g. 10683142@c.us) from high in the DOM.
         jid = self._jid_from_subtree_attr_scan(driver, row)
         if jid:
             return jid, "subtree_attrs", None
 
+        jid = WhatsAppSessionManager._jid_from_display_name_phone(preview_name)
+        if jid:
+            return jid, "display_name_digits", None
+
         jid = self._jid_from_row_markup_residual(row)
         if jid:
             return jid, "row_href_outerhtml_attr", None
+
+        jid = self._jid_from_dom_ancestor_attr_scan(driver, row)
+        if jid:
+            return jid, "ancestor_attrs", None
 
         if self._list_chats_row_click_budget > 0:
             self._list_chats_row_click_budget -= 1
@@ -1337,16 +1343,29 @@ class WhatsAppSessionManager:
         jid = cls._jid_from_token_with_prefix(t)
         if jid:
             return jid
+        # Require 10+ digits for bare runs — 7–9 digit matches are often internal
+        # UI ids (e.g. linked-device fragments) and collapse unrelated chats.
         best: Optional[str] = None
         best_len = 0
-        for m in re.finditer(r"\d{7,}", t):
+        for m in re.finditer(r"\d{10,}", t):
             d = m.group(0)
             ln = len(d)
-            if 7 <= ln <= 20 and ln > best_len:
+            if ln <= 20 and ln > best_len:
                 best = d
                 best_len = ln
         if best:
             return f"{best}@c.us"
+        return None
+
+    @staticmethod
+    def _jid_from_display_name_phone(name: str) -> Optional[str]:
+        """E.164-ish title lines often carry enough digits for @c.us (sidebar)."""
+        raw = (name or "").strip()
+        if not raw:
+            return None
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if 10 <= len(digits) <= 15:
+            return f"{digits}@c.us"
         return None
 
     @staticmethod
@@ -1357,9 +1376,14 @@ class WhatsAppSessionManager:
             raw = driver.execute_script(
                 """
                 const el = arguments[0];
+                const chatList = document.querySelector(
+                  '[data-testid="chat-list"]');
                 const out = [];
                 let p = el;
-                for (let i = 0; i < 14 && p; i++) {
+                for (let i = 0; i < 5 && p; i++) {
+                  if (chatList && (!chatList.contains(p) || p === chatList)) {
+                    break;
+                  }
                   if (p.attributes) {
                     for (const a of p.attributes) {
                       const v = (a.value || '').trim();

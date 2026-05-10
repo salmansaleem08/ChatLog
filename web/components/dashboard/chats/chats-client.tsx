@@ -333,7 +333,7 @@ export function ChatsClient({
           ) : null}
         </div>
       ) : (
-        <ul className="space-y-2">
+        <ul className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
           {filtered.map((r) => {
             const openHref = r.threadId
               ? `/dashboard/chats/${r.threadId}`
@@ -341,35 +341,46 @@ export function ChatsClient({
             const analyzedLabel = r.lastAnalyzedAt
               ? formatRelativeTime(r.lastAnalyzedAt)
               : null;
+            const initial = (r.displayName.trim().charAt(0) || "?").toUpperCase();
+            const rowKey = r.threadId
+              ? `${r.chatJid}:${r.threadId}`
+              : r.chatJid;
             return (
-              <li key={r.chatJid}>
-                <div className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-3 shadow-sm transition-colors hover:border-primary/35 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <li
+                key={rowKey}
+                className="border-b border-border last:border-b-0"
+              >
+                <div className="group flex items-stretch gap-2 px-2 py-2.5 transition-colors hover:bg-muted/40 sm:gap-3 sm:px-4 sm:py-3">
+                  <div
+                    className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary sm:size-12 sm:text-base"
+                    aria-hidden
+                  >
+                    {initial}
+                  </div>
                   <Link
                     href={openHref}
                     className={cn(
-                      "min-w-0 flex-1 rounded-lg outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring",
+                      "min-w-0 flex-1 self-center rounded-md py-0.5 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring",
                       !r.threadId && "pointer-events-none opacity-70"
                     )}
                     prefetch={Boolean(r.threadId)}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-[1.02rem] font-semibold text-foreground group-hover:text-primary">
-                          {r.displayName}
-                        </p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {formatPhoneDisplay(r.phoneDigits)}
-                        </p>
-                      </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="truncate text-[0.9375rem] font-semibold leading-tight text-foreground group-hover:text-primary sm:text-base">
+                        {r.displayName}
+                      </p>
                       <time
-                        className="shrink-0 text-xs tabular-nums text-muted-foreground"
+                        className="shrink-0 text-[0.6875rem] tabular-nums text-muted-foreground sm:text-xs"
                         dateTime={r.lastMessageAt ?? undefined}
                       >
                         {formatRelativeTime(r.lastMessageAt)}
                       </time>
                     </div>
-                    <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                      {r.preview || "No preview"}
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground sm:text-[0.8125rem]">
+                      {formatPhoneDisplay(r.phoneDigits)}
+                    </p>
+                    <p className="mt-1 truncate text-xs leading-snug text-muted-foreground sm:text-sm">
+                      {r.preview || "—"}
                     </p>
                     <span className="sr-only">
                       Opens detail for{" "}
@@ -377,11 +388,12 @@ export function ChatsClient({
                     </span>
                   </Link>
 
-                  <div className="flex shrink-0 flex-col items-stretch gap-2 sm:w-52">
+                  <div className="flex shrink-0 flex-col items-stretch justify-center gap-1 self-center sm:min-w-[8.5rem]">
                     <Button
                       type="button"
-                      size="lg"
-                      className="h-10 w-full"
+                      size="sm"
+                      variant="secondary"
+                      className="h-9 w-full px-2 text-xs sm:h-10 sm:text-sm"
                       disabled={
                         !r.threadId || !r.canAnalyze || busyThread === r.threadId
                       }
@@ -393,20 +405,19 @@ export function ChatsClient({
                     >
                       {busyThread === r.threadId ? (
                         <>
-                          <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                          <Loader2 className="mr-1.5 size-3.5 animate-spin sm:mr-2 sm:size-4" aria-hidden />
                           Working…
                         </>
                       ) : (
                         <>
-                          <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
-                          Extract orders
+                          <Sparkles className="mr-1.5 size-3.5 opacity-90 sm:mr-2 sm:size-4" aria-hidden />
+                          Analyze
                         </>
                       )}
                     </Button>
                     {!r.canAnalyze && r.threadId ? (
-                      <p className="text-center text-[0.6875rem] leading-snug text-muted-foreground">
-                        Last extracted {analyzedLabel ?? "recently"}
-                        . New messages will unlock this again.
+                      <p className="hidden text-center text-[0.625rem] leading-tight text-muted-foreground sm:block">
+                        Up to date · {analyzedLabel ?? "recent"}
                       </p>
                     ) : null}
                   </div>
