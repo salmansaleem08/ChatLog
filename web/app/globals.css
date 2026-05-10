@@ -14,6 +14,19 @@
   .text-balance {
     text-wrap: balance;
   }
+
+  /* Premium hero / auth headline gradient — teal → lighter cyan → teal */
+  .text-gradient-hero {
+    background-image: linear-gradient(
+      90deg,
+      var(--primary),
+      oklch(0.72 0.11 200),
+      var(--primary)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 
 @layer base {
