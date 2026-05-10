@@ -29,10 +29,12 @@ type ChatRow = {
 };
 
 type ChatsPayload = {
+  ok?: boolean;
   serviceConfigured?: boolean;
   chats?: ChatRow[];
   whatsapp_link_status?: string;
   error?: string;
+  warning?: string;
   code?: string;
 };
 
@@ -69,6 +71,7 @@ export function ChatsClient({
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [linkStatus, setLinkStatus] =
     useState<WhatsappLinkStatus>(initialLinkStatus);
@@ -77,6 +80,7 @@ export function ChatsClient({
 
   const load = useCallback(async () => {
     setError(null);
+    setWarning(null);
     setLoading(true);
     try {
       const res = await fetch("/api/whatsapp/chats");
@@ -88,6 +92,9 @@ export function ChatsClient({
         );
         setRows([]);
         return;
+      }
+      if (typeof data.warning === "string" && data.warning.trim().length > 0) {
+        setWarning(data.warning);
       }
       if (typeof data.whatsapp_link_status === "string") {
         const s = data.whatsapp_link_status;
@@ -170,6 +177,14 @@ export function ChatsClient({
           {error}
         </p>
       ) : null}
+      {warning ? (
+        <p
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200"
+          role="status"
+        >
+          {warning}
+        </p>
+      ) : null}
 
       {needsLink ? (
         <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-5 py-6 sm:px-7">
@@ -201,7 +216,8 @@ export function ChatsClient({
       ) : null}
 
       {!needsLink ? (
-        <div className="relative">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
             aria-hidden
@@ -213,6 +229,15 @@ export function ChatsClient({
             className="h-11 pl-10"
             aria-label="Search chats"
           />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11 w-full sm:w-auto"
+            onClick={() => void load()}
+          >
+            Refresh
+          </Button>
         </div>
       ) : null}
 
@@ -247,7 +272,7 @@ export function ChatsClient({
               : null;
             return (
               <li key={r.chatJid}>
-                <div className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/35 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+                <div className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-3 shadow-sm transition-colors hover:border-primary/35 sm:flex-row sm:items-center sm:justify-between sm:p-5">
                   <Link
                     href={openHref}
                     className={cn(
@@ -285,7 +310,7 @@ export function ChatsClient({
                     <Button
                       type="button"
                       size="lg"
-                      className="h-11 sm:h-10"
+                      className="h-10 w-full"
                       disabled={
                         !r.threadId || !r.canAnalyze || busyThread === r.threadId
                       }

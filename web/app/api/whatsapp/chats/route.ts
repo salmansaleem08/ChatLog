@@ -21,10 +21,48 @@ type RemoteChat = {
 type StoredThreadRow = {
   id: string;
   wa_chat_jid: string;
+  phone_digits: string | null;
+  contact_name: string | null;
+  last_message_preview: string | null;
   last_analyzed_at: string | null;
   extraction_watermark_at: string | null;
   last_message_at: string | null;
 };
+
+function toChatPayloadFromStored(rows: StoredThreadRow[]) {
+  return rows
+    .map((row) => {
+      const effectiveIso = row.last_message_at ? String(row.last_message_at) : null;
+      const lastMs = effectiveIso ? Date.parse(effectiveIso) : NaN;
+      return {
+        threadId: String(row.id),
+        chatJid: String(row.wa_chat_jid),
+        phoneDigits: String(row.phone_digits ?? ""),
+        displayName:
+          String(row.contact_name ?? "").trim() ||
+          String(row.phone_digits ?? "") ||
+          "Contact",
+        preview: String(row.last_message_preview ?? ""),
+        lastMessageAt: effectiveIso,
+        lastMessageMs: Number.isFinite(lastMs) ? lastMs : null,
+        canAnalyze: canAnalyzeThreadState({
+          last_analyzed_at: row.last_analyzed_at
+            ? String(row.last_analyzed_at)
+            : null,
+          extraction_watermark_at: row.extraction_watermark_at
+            ? String(row.extraction_watermark_at)
+            : null,
+          last_message_at: effectiveIso,
+        }),
+        lastAnalyzedAt: row.last_analyzed_at ?? null,
+      };
+    })
+    .sort((a, b) => {
+      const am = typeof a.lastMessageMs === "number" ? a.lastMessageMs : 0;
+      const bm = typeof b.lastMessageMs === "number" ? b.lastMessageMs : 0;
+      return bm - am;
+    });
+}
 
 export async function GET() {
   const supabase = createClient();
@@ -77,18 +115,42 @@ export async function GET() {
       ) {
         code = "not_logged_in";
       }
-      return NextResponse.json(
-        {
-          error: "We couldn’t load your chats right now. Try linking again shortly.",
-          serviceConfigured: true,
-          chats: [],
-          upstreamStatus: res.status,
-          code,
-          detail:
-            process.env.NODE_ENV === "development" ? detail : undefined,
-        },
-        { status: res.status === 409 ? 409 : 502 }
+      const { data: existing } = await supabase
+        .from("whatsapp_chat_threads")
+        .select(
+          [
+            "id",
+            "wa_chat_jid",
+            "phone_digits",
+            "contact_name",
+            "last_message_preview",
+            "last_analyzed_at",
+            "extraction_watermark_at",
+            "last_message_at",
+          ].join(",")
+        )
+        .eq("business_id", user.id);
+
+      const fallbackRows = toChatPayloadFromStored(
+        (existing ?? []) as unknown as StoredThreadRow[]
       );
+      const { data: waProfile } = await supabase
+        .from("profiles")
+        .select("whatsapp_link_status")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      return NextResponse.json({
+        ok: false,
+        warning: "Live WhatsApp is temporarily unavailable. Showing your last synced chats.",
+        serviceConfigured: true,
+        chats: fallbackRows,
+        upstreamStatus: res.status,
+        code,
+        whatsapp_link_status:
+          (waProfile?.whatsapp_link_status as string) ?? "disconnected",
+        detail: process.env.NODE_ENV === "development" ? detail : undefined,
+      });
     }
 
     const rawChats = Array.isArray(body.chats)
@@ -126,16 +188,26 @@ export async function GET() {
           onConflict: "business_id,wa_chat_jid",
         })
         .select(
-          "id, wa_chat_jid, last_analyzed_at, extraction_watermark_at, last_message_at"
+          [
+            "id",
+            "wa_chat_jid",
+            "phone_digits",
+            "contact_name",
+            "last_message_preview",
+            "last_analyzed_at",
+            "extraction_watermark_at",
+            "last_message_at",
+          ].join(",")
         );
 
       if (upErr) {
         console.error("[whatsapp/chats] upsert threads failed", upErr);
       } else if (stored) {
+        const typedStored = stored as unknown as StoredThreadRow[];
         storedLookup = new Map(
-          stored.map((row) => [
+          typedStored.map((row) => [
             row.wa_chat_jid as string,
-            row as StoredThreadRow,
+            row,
           ])
         );
       }
@@ -143,13 +215,23 @@ export async function GET() {
       const { data: existing } = await supabase
         .from("whatsapp_chat_threads")
         .select(
-          "id, wa_chat_jid, last_analyzed_at, extraction_watermark_at, last_message_at"
+          [
+            "id",
+            "wa_chat_jid",
+            "phone_digits",
+            "contact_name",
+            "last_message_preview",
+            "last_analyzed_at",
+            "extraction_watermark_at",
+            "last_message_at",
+          ].join(",")
         )
         .eq("business_id", user.id);
+      const typedExisting = (existing ?? []) as unknown as StoredThreadRow[];
       storedLookup = new Map(
-        (existing ?? []).map((row) => [
+        typedExisting.map((row) => [
           row.wa_chat_jid as string,
-          row as StoredThreadRow,
+          row,
         ])
       );
     }
@@ -250,12 +332,40 @@ export async function GET() {
       process.env.NODE_ENV === "development"
         ? { detail: describeAutomationReachabilityError(e) }
         : {};
-    return NextResponse.json(
-      {
-        ...dev,
-        error: "Something went wrong. Try again shortly.",
-      },
-      { status: 502 }
-    );
+    const { data: existing } = await supabase
+      .from("whatsapp_chat_threads")
+      .select(
+        [
+          "id",
+          "wa_chat_jid",
+          "phone_digits",
+          "contact_name",
+          "last_message_preview",
+          "last_analyzed_at",
+          "extraction_watermark_at",
+          "last_message_at",
+        ].join(",")
+      )
+      .eq("business_id", user.id);
+    const { data: waProfile } = await supabase
+      .from("profiles")
+      .select("whatsapp_link_status")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    return NextResponse.json({
+      ...dev,
+      ok: false,
+      warning:
+        "Live WhatsApp is temporarily unavailable. Showing your last synced chats.",
+      serviceConfigured: true,
+      chats: toChatPayloadFromStored(
+        (existing ?? []) as unknown as StoredThreadRow[]
+      ),
+      whatsapp_link_status:
+        (waProfile?.whatsapp_link_status as string) ?? "disconnected",
+      error: "Something went wrong. Try again shortly.",
+      code: "upstream_unreachable",
+    });
   }
 }
