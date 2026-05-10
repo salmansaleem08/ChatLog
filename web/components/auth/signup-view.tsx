@@ -81,7 +81,7 @@ export function SignUpView() {
       setLoading(false);
       setErrors({
         email:
-          "No active session after sign up. In Supabase → Authentication → Providers → Email, turn off “Confirm email”.",
+          "We couldn’t sign you in automatically. If you just created an account, check your email or try signing in. Contact support if this keeps happening.",
       });
       return;
     }
@@ -99,7 +99,7 @@ export function SignUpView() {
     if (profileError) {
       setErrors({
         business:
-          "We could not save your business name. Confirm the profiles table exists and try again.",
+          "We couldn’t save your business name. Please try again.",
       });
       return;
     }

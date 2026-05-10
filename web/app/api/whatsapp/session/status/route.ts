@@ -82,7 +82,10 @@ export async function GET() {
       e.message === "CHATLOG_AUTOMATION_NOT_CONFIGURED"
     ) {
       return NextResponse.json(
-        { error: "Automation service is not configured", code: "not_configured" },
+        {
+          error: "This feature isn’t available right now. Please try again later.",
+          code: "not_configured",
+        },
         { status: 503 }
       );
     }

@@ -27,7 +27,7 @@ function statusLabel(s: WhatsappLinkStatus): string {
     case "connected":
       return "Connected";
     case "awaiting_scan":
-      return "Waiting for QR scan";
+      return "Waiting for scan";
     default:
       return "Not linked";
   }
@@ -54,7 +54,7 @@ export function WhatsAppLinkPanel({
     const res = await fetch("/api/whatsapp/session/status");
     const data = (await res.json()) as StatusPayload;
     if (!res.ok) {
-      setError(data.error ?? "Could not refresh status");
+      setError(data.error ?? "Something went wrong. Please try again.");
       return;
     }
     setRemote(data);
@@ -86,7 +86,7 @@ export function WhatsAppLinkPanel({
         setError(
           typeof data.error === "string"
             ? data.error
-            : "Could not start WhatsApp session"
+            : "Something went wrong. Please try again."
         );
         return;
       }
@@ -130,17 +130,10 @@ export function WhatsAppLinkPanel({
     <section className="rounded-xl border border-border bg-card p-5 shadow-sm sm:p-6">
       <h2 className="text-lg font-semibold tracking-tight">WhatsApp</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        Link the WhatsApp you use for orders. Scan the QR below with your phone
-        (WhatsApp → Linked devices). To show the QR only here — not a separate
-        Chrome window — set{" "}
-        <code className="rounded-md border border-border bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground">
-          HEADLESS=1
-        </code>{" "}
-        in{" "}
-        <code className="rounded-md border border-border bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground">
-          whatsapp-service/.env
-        </code>{" "}
-        and restart the automation server.
+        Connect the WhatsApp number you use with customers. Tap{" "}
+        <strong>Connect WhatsApp</strong>, open WhatsApp on your phone, go to{" "}
+        <strong>Settings → Linked devices → Link a device</strong>, then scan the
+        code that appears here.
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -158,7 +151,7 @@ export function WhatsAppLinkPanel({
         </span>
         {remote?.serviceConfigured === false ? (
           <span className="text-xs text-muted-foreground">
-            Automation URL/secret not set on this deployment.
+            Linking isn’t available on this workspace yet. Try again later.
           </span>
         ) : null}
       </div>
@@ -172,8 +165,8 @@ export function WhatsAppLinkPanel({
       <div className="mt-6 space-y-2">
         <Label htmlFor="wa-phone">Business WhatsApp number (optional)</Label>
         <p className="text-xs text-muted-foreground">
-          E.164 format if possible (e.g. +923001234567). Used as a label for your
-          team; linking is still done by scanning QR with that device.
+          Add your number with country code (for example +92 …) so your team can
+          recognize it in ChatLog.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <Input
@@ -206,7 +199,7 @@ export function WhatsAppLinkPanel({
             disabled={loadingStart}
             className="w-full sm:w-auto"
           >
-            {loadingStart ? "Starting…" : "Start linking session"}
+            {loadingStart ? "Connecting…" : "Connect WhatsApp"}
           </Button>
           <Button
             type="button"
@@ -221,14 +214,13 @@ export function WhatsAppLinkPanel({
         {showQr ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-4">
             <p className="text-center text-xs text-muted-foreground">
-              Scan with your business phone (WhatsApp → Linked devices). The image
-              can take up to a minute while the server opens WhatsApp Web.
+              Scan this code with your phone. It may take a short while to appear.
             </p>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               key={qrNonce}
               src={`/api/whatsapp/session/qr?t=${qrNonce}`}
-              alt="WhatsApp Web QR code"
+              alt="Code to link your WhatsApp account"
               width={220}
               height={220}
               className="rounded-md bg-white p-1"
@@ -237,10 +229,8 @@ export function WhatsAppLinkPanel({
             />
             {qrLoadError ? (
               <p className="max-w-xs text-center text-xs text-destructive">
-                QR did not load (404 or timeout). Tap <strong>Refresh status</strong>{" "}
-                or <strong>Start linking session</strong> again. On free hosting,
-                WhatsApp may block headless browsers — try again or run the
-                automation service locally with a visible browser.
+                The code didn’t load. Tap <strong>Refresh status</strong> or{" "}
+                <strong>Connect WhatsApp</strong> again.
               </p>
             ) : null}
           </div>

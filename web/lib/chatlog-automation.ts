@@ -8,12 +8,20 @@ export function automationBaseUrl(): string | undefined {
   return process.env.CHATLOG_AUTOMATION_URL?.replace(/\/$/, "");
 }
 
+const USER_SAFE_CONNECTION_ERROR =
+  "We couldn’t connect right now. Check your connection and try again.";
+
 /**
- * Turns undici's opaque "fetch failed" into an actionable message for local dev.
+ * End-user-safe messages in production; optional detail in development only.
  */
 export function describeAutomationReachabilityError(err: unknown): string {
-  const base = automationBaseUrl() ?? "(CHATLOG_AUTOMATION_URL not set)";
+  const isDev = process.env.NODE_ENV === "development";
+
   if (err instanceof TypeError && err.message === "fetch failed") {
+    if (!isDev) {
+      return USER_SAFE_CONNECTION_ERROR;
+    }
+    const base = automationBaseUrl() ?? "(CHATLOG_AUTOMATION_URL not set)";
     const cause = (err as Error & { cause?: { code?: string; message?: string } })
       .cause;
     const code =
@@ -27,14 +35,17 @@ export function describeAutomationReachabilityError(err: unknown): string {
     const tail = [code, causeMsg].filter(Boolean).join(" ");
     const hint =
       code === "ECONNREFUSED" || code === "ETIMEDOUT" || !code
-        ? "Start the API in another terminal: cd whatsapp-service && source .venv/bin/activate && uvicorn main:app --host 127.0.0.1 --port 8000 — then curl http://127.0.0.1:8000/health"
+        ? "Start the API: cd whatsapp-service && source .venv/bin/activate && uvicorn main:app --host 127.0.0.1 --port 8000"
         : "";
-    return `Cannot reach automation service at ${base}${tail ? ` (${tail})` : ""}. ${hint}`.trim();
+    return `Cannot reach backend at ${base}${tail ? ` (${tail})` : ""}. ${hint}`.trim();
   }
   if (err instanceof Error) {
+    if (!isDev) {
+      return USER_SAFE_CONNECTION_ERROR;
+    }
     return err.message;
   }
-  return String(err);
+  return isDev ? String(err) : USER_SAFE_CONNECTION_ERROR;
 }
 
 export async function automationFetch(

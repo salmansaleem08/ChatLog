@@ -19,7 +19,10 @@ export async function GET() {
   }
 
   if (!automationConfigured()) {
-    return NextResponse.json({ error: "Not configured" }, { status: 503 });
+    return NextResponse.json(
+      { error: "This feature isn’t available right now." },
+      { status: 503 }
+    );
   }
 
   try {
@@ -44,7 +47,10 @@ export async function GET() {
       e instanceof Error &&
       e.message === "CHATLOG_AUTOMATION_NOT_CONFIGURED"
     ) {
-      return NextResponse.json({ error: "Not configured" }, { status: 503 });
+      return NextResponse.json(
+        { error: "This feature isn’t available right now." },
+        { status: 503 }
+      );
     }
     return NextResponse.json(
       { error: describeAutomationReachabilityError(e) },

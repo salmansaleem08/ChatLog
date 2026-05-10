@@ -10,7 +10,7 @@ export async function saveWhatsAppPhoneE164(phone: string) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return { error: "Unauthorized" as const };
+    return { error: "Please sign in again." as const };
   }
 
   const v = phone.trim();
