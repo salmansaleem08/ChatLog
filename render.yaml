@@ -1,0 +1,11 @@
+# Render Blueprint — set repository root and connect GitHub in the Render dashboard.
+# Python service: use a virtual environment locally; Render installs from requirements.txt.
+
+services:
+  - type: web
+    name: chatlog-whatsapp-service
+    runtime: python
+    rootDir: whatsapp-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
