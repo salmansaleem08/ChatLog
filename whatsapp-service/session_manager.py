@@ -455,9 +455,30 @@ class WhatsAppSessionManager:
     def _gather_sidebar_candidate_rows(
         self, driver: webdriver.Chrome
     ) -> Tuple[List[Any], Dict[str, int]]:
+        """
+        Prefer a single canonical row node per chat. Nested selectors (cell-frame +
+        role=row + chat-list row) triple-count the same visible rows and waste work.
+        """
         seen: set[int] = set()
         rows: List[Any] = []
         counts: Dict[str, int] = {}
+        primary = driver.find_elements(
+            By.CSS_SELECTOR,
+            '#pane-side [data-testid="cell-frame-container"]',
+        )
+        counts['#pane-side [data-testid="cell-frame-container"]'] = len(primary)
+        if primary:
+            for row in primary:
+                try:
+                    rid = id(row)
+                except Exception:
+                    continue
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                rows.append(row)
+            return rows, counts
+
         for sel in self._SIDEBAR_ROW_SELECTORS:
             found = driver.find_elements(By.CSS_SELECTOR, sel)
             counts[sel] = len(found)
@@ -560,7 +581,7 @@ class WhatsAppSessionManager:
                 href = (link_el.get_attribute("href") or "").strip()
                 jid = self._jid_from_chat_href(href)
             if not jid:
-                jid = self._jid_from_cell_row_deep(row)
+                jid = self._jid_from_cell_row_deep(row, self._driver)
             if not jid or jid.endswith("@g.us"):
                 return False
 
@@ -1096,6 +1117,91 @@ class WhatsAppSessionManager:
         return None
 
     @classmethod
+    def _jid_from_token_with_prefix(cls, token: str) -> Optional[str]:
+        """
+        WhatsApp data-id values often embed the JID, e.g. false_123...@c.us — do not
+        trust the full string as normalize_jid_candidate would.
+        """
+        token = (token or "").strip()
+        if not token:
+            return None
+        m = re.search(
+            r"(\d{10,20}@[cs]\.(?:us|whatsapp\.net)|[A-Za-z0-9.\-+]+@lid)",
+            token,
+            flags=re.I,
+        )
+        if m:
+            jid = cls._normalize_jid_candidate(m.group(1))
+            if jid:
+                return jid
+        if "_" in token:
+            tail = token.rsplit("_", 1)[-1]
+            jid = cls._normalize_jid_candidate(tail)
+            if jid:
+                return jid
+        return cls._normalize_jid_candidate(token)
+
+    @classmethod
+    def _jid_from_attr_blob(cls, blob: str) -> Optional[str]:
+        blob = (blob or "").strip()
+        if not blob or "@" not in blob:
+            return None
+        jid = cls._jid_from_token_with_prefix(blob)
+        if jid:
+            return jid
+        for m in re.finditer(
+            r"(\d{10,20}@[cs]\.(?:us|whatsapp\.net)|[A-Za-z0-9.\-+_]+@lid)",
+            blob,
+            flags=re.I,
+        ):
+            cand = m.group(1)
+            jid = cls._jid_from_token_with_prefix(cand)
+            if jid:
+                return jid
+        return None
+
+    @classmethod
+    def _jid_from_dom_dataset_chain(
+        cls, driver: webdriver.Chrome, row: Any
+    ) -> Optional[str]:
+        """Read data-* and @-containing attrs up the DOM chain (JIDs often on parent)."""
+        try:
+            blobs = driver.execute_script(
+                """
+                const el = arguments[0];
+                const out = [];
+                let p = el;
+                for (let i = 0; i < 12 && p; i++) {
+                  if (p.dataset) {
+                    for (const k of Object.keys(p.dataset)) {
+                      const v = p.dataset[k];
+                      if (v && String(v).length) out.push(String(v));
+                    }
+                  }
+                  if (p.attributes) {
+                    for (const a of p.attributes) {
+                      const v = (a.value || '').trim();
+                      if (!v || v.length > 800) continue;
+                      if (v.includes('@')) out.push(v);
+                    }
+                  }
+                  p = p.parentElement;
+                }
+                return out;
+                """,
+                row,
+            )
+        except Exception:
+            return None
+        if not blobs:
+            return None
+        for blob in blobs:
+            jid = cls._jid_from_attr_blob(str(blob))
+            if jid and not jid.endswith("@g.us"):
+                return jid
+        return None
+
+    @classmethod
     def _jid_from_row_html_fragment(cls, html: str) -> Optional[str]:
         """
         WhatsApp often omits <a href> on list rows; JID may still appear in markup
@@ -1143,8 +1249,14 @@ class WhatsAppSessionManager:
         return None
 
     @classmethod
-    def _jid_from_cell_row_deep(cls, row: Any) -> Optional[str]:
+    def _jid_from_cell_row_deep(
+        cls, row: Any, driver: Optional[webdriver.Chrome] = None
+    ) -> Optional[str]:
         """Resolve chat JID when the row is not wrapped in a classic <a href=/chat/…>."""
+        if driver is not None:
+            jid_ds = cls._jid_from_dom_dataset_chain(driver, row)
+            if jid_ds:
+                return jid_ds
         href_selectors = (
             'a[href*="/chat/"]',
             'a[href*="chat/"]',
@@ -1180,7 +1292,24 @@ class WhatsAppSessionManager:
             html = row.get_attribute("outerHTML") or ""
         except Exception:
             html = ""
-        return cls._jid_from_row_html_fragment(html)
+        jid = cls._jid_from_row_html_fragment(html)
+        if jid:
+            return jid
+        for attr in (
+            "data-id",
+            "data-jid",
+            "data-chat-id",
+            "data-contact-id",
+        ):
+            try:
+                blob = (row.get_attribute(attr) or "").strip()
+            except Exception:
+                blob = ""
+            if blob:
+                jid_a = cls._jid_from_attr_blob(blob)
+                if jid_a and not jid_a.endswith("@g.us"):
+                    return jid_a
+        return None
 
     @staticmethod
     def _scroll_chat_pane_to_end(driver: webdriver.Chrome) -> None:
