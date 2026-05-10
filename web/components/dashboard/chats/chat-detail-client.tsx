@@ -3,7 +3,7 @@
 import { ArrowLeft, Loader2, RotateCcw, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,71 @@ type LineVm = {
   matchedProduct?: string | null;
   matchedVariantAttrs?: Record<string, string> | null;
 };
+
+function LineRow({ ln }: { ln: LineVm }) {
+  const sub =
+    ln.matchedProduct && ln.matchedVariantAttrs
+      ? `${ln.matchedProduct} · ${Object.entries(ln.matchedVariantAttrs)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(" · ")}`
+      : ln.matchedProduct;
+  return (
+    <li className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 sm:py-5">
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {ln.unresolved ? (
+            <Badge
+              variant="outline"
+              className="border-amber-500/40 bg-amber-500/10 text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-950 dark:text-amber-100"
+            >
+              Review
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              className="border-primary/35 bg-primary/10 text-[0.6875rem] font-semibold uppercase tracking-wide text-primary"
+            >
+              Matched
+            </Badge>
+          )}
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
+            Confidence {(ln.confidence * 100).toFixed(0)}%
+          </span>
+        </div>
+        <p className="text-[1.015rem] font-semibold leading-snug text-foreground">
+          Customer said:{" "}
+          <span className="font-medium text-muted-foreground">{ln.aiProduct}</span>
+          {ln.aiVariant.trim() ? (
+            <>
+              {" "}
+              <span className="text-muted-foreground/80">({ln.aiVariant})</span>
+            </>
+          ) : null}
+        </p>
+        {sub ? (
+          <p className="text-sm leading-relaxed text-primary">
+            Matched catalogue: <span className="font-semibold">{sub}</span>
+          </p>
+        ) : null}
+      </div>
+      <div className="shrink-0 text-right tabular-nums">
+        <p className="text-sm font-semibold text-foreground">
+          × {String(ln.quantity)} @{" "}
+          {ln.unitPrice == null ? "—" : formatMoneyAmount(toNumber(ln.unitPrice))}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Row total:{" "}
+          {ln.unitPrice == null
+            ? "—"
+            : formatMoneyAmount(
+                toNumber(ln.quantity) * toNumber(ln.unitPrice)
+              )}
+        </p>
+      </div>
+    </li>
+  );
+}
 
 export function ChatDetailClient({
   threadId,
@@ -44,6 +109,12 @@ export function ChatDetailClient({
     null
   );
   const [error, setError] = useState<string | null>(null);
+
+  const { matchedLines, reviewLines } = useMemo(() => {
+    const matchedLines = lines.filter((l) => !l.unresolved);
+    const reviewLines = lines.filter((l) => l.unresolved);
+    return { matchedLines, reviewLines };
+  }, [lines]);
 
   const phone =
     phoneDigits.replace(/\D/g, "").length > 0
@@ -79,7 +150,7 @@ export function ChatDetailClient({
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
-        setError(body.error ?? "Could not extract orders.");
+        setError(body.error ?? "Could not interpret messages yet. Try again.");
         return;
       }
       router.refresh();
@@ -97,7 +168,7 @@ export function ChatDetailClient({
             className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline hover:underline-offset-4"
           >
             <ArrowLeft className="size-4" aria-hidden />
-            Chats
+            All chats
           </Link>
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
@@ -152,7 +223,7 @@ export function ChatDetailClient({
             ) : (
               <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
             )}
-            Extract orders
+            Analyze
           </Button>
         </div>
       </div>
@@ -168,104 +239,82 @@ export function ChatDetailClient({
 
       {!canAnalyze && lastAnalyzedAt ? (
         <p className="text-sm text-muted-foreground">
-          Extraction is up to date. When the customer sends something new here,
-          unlock “Extract orders” again from this page or from the chats list.
+          Extraction is up to date for the latest messages. When something new
+          arrives in this thread, Analyze will unlock here and on the chat list.
         </p>
       ) : null}
 
-      <section className="rounded-xl border border-border bg-card shadow-sm">
-        <header className="border-b border-border px-5 py-4 sm:px-6">
-          <h2 className="text-lg font-semibold tracking-tight">
-            Extracted line items
+      {lines.length === 0 ? (
+        <section className="rounded-xl border border-border bg-card px-6 py-14 text-center shadow-sm sm:px-10 sm:py-16">
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">
+            No extraction yet
           </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Matched against your catalogue when we’re confident. Anything
-            flagged needs your eyes before becoming an order later.
+          <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
+            We have not interpreted this conversation for orders. Run Analyze to
+            read the thread against your catalogue and list line items below.
           </p>
-        </header>
+          <div className="mt-8 flex justify-center">
+            <Button
+              type="button"
+              size="lg"
+              className="h-11 sm:h-10"
+              disabled={!canAnalyze || busyAction !== null}
+              onClick={runAnalyze}
+            >
+              {busyAction === "analyze" ? (
+                <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+              ) : (
+                <Sparkles className="mr-2 size-4 opacity-90" aria-hidden />
+              )}
+              Analyze
+            </Button>
+          </div>
+          {!canAnalyze && lastAnalyzedAt ? (
+            <p className="mt-4 text-xs text-muted-foreground">
+              Waiting for new messages before another run.
+            </p>
+          ) : null}
+        </section>
+      ) : (
+        <div className="space-y-6">
+          {matchedLines.length > 0 ? (
+            <section className="rounded-xl border border-border bg-card shadow-sm">
+              <header className="border-b border-border px-5 py-4 sm:px-6">
+                <h2 className="text-lg font-semibold tracking-tight">
+                  Extracted line items
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Lines we matched to your catalogue with usable confidence.
+                </p>
+              </header>
+              <ul className="divide-y divide-border">
+                {matchedLines.map((ln) => (
+                  <LineRow key={ln.id} ln={ln} />
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
-        {lines.length === 0 ? (
-          <p className="px-6 py-16 text-center text-sm text-muted-foreground">
-            No extraction yet — run extraction from the chats list or the button
-            above.
-          </p>
-        ) : (
-          <ul className="divide-y divide-border">
-            {lines.map((ln) => {
-              const sub =
-                ln.matchedProduct && ln.matchedVariantAttrs
-                  ? `${ln.matchedProduct} · ${Object.entries(ln.matchedVariantAttrs)
-                      .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([k, v]) => `${k}: ${v}`)
-                      .join(" · ")}`
-                  : ln.matchedProduct;
-              return (
-                <li key={ln.id} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 sm:py-5">
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {ln.unresolved ? (
-                        <Badge
-                          variant="outline"
-                          className="border-amber-500/40 bg-amber-500/10 text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-950 dark:text-amber-100"
-                        >
-                          Review
-                        </Badge>
-                      ) : (
-                        <Badge
-                          variant="outline"
-                          className="border-primary/35 bg-primary/10 text-[0.6875rem] font-semibold uppercase tracking-wide text-primary"
-                        >
-                          Matched
-                        </Badge>
-                      )}
-                      <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                        Confidence {(ln.confidence * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                    <p className="text-[1.015rem] font-semibold leading-snug text-foreground">
-                      Customer said:{" "}
-                      <span className="font-medium text-muted-foreground">
-                        {ln.aiProduct}
-                      </span>
-                      {ln.aiVariant.trim() ? (
-                        <>
-                          {" "}
-                          <span className="text-muted-foreground/80">
-                            ({ln.aiVariant})
-                          </span>
-                        </>
-                      ) : null}
-                    </p>
-                    {sub ? (
-                      <p className="text-sm leading-relaxed text-primary">
-                        Matched catalogue:{" "}
-                        <span className="font-semibold">{sub}</span>
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="shrink-0 text-right tabular-nums">
-                    <p className="text-sm font-semibold text-foreground">
-                      × {String(ln.quantity)}{" "}
-                      @{" "}
-                      {ln.unitPrice == null
-                        ? "—"
-                        : formatMoneyAmount(toNumber(ln.unitPrice))}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Row total:{" "}
-                      {ln.unitPrice == null
-                        ? "—"
-                        : formatMoneyAmount(
-                            toNumber(ln.quantity) * toNumber(ln.unitPrice)
-                          )}
-                    </p>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
+          {reviewLines.length > 0 ? (
+            <section className="rounded-xl border border-amber-500/25 bg-card shadow-sm">
+              <header className="border-b border-amber-500/20 bg-amber-500/[0.06] px-5 py-4 sm:px-6">
+                <h2 className="text-lg font-semibold tracking-tight">
+                  Needs your review
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  These lines are flagged so you can confirm wording or catalogue
+                  matches before they flow into orders.
+                </p>
+              </header>
+              <ul className="divide-y divide-border">
+                {reviewLines.map((ln) => (
+                  <LineRow key={ln.id} ln={ln} />
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

@@ -143,38 +143,43 @@ export function ChatsClient({
     const q = search.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) => {
-      const blob = `${r.displayName} ${r.phoneDigits}`.toLowerCase();
+      const blob =
+        `${r.displayName} ${r.phoneDigits} ${r.preview}`.toLowerCase();
       return blob.includes(q);
     });
   }, [rows, search]);
 
-  async function analyze(threadId: string | null) {
-    if (!threadId) {
-      setError(
-        "This row is still syncing. Refresh the page in a moment and try again."
-      );
-      return;
-    }
-    setBusyThread(threadId);
-    setError(null);
-    try {
-      const res = await fetch(`/api/whatsapp/chat-threads/${threadId}/analyze`, {
-        method: "POST",
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) {
+  const analyze = useCallback(
+    async (threadId: string | null) => {
+      if (!threadId) {
         setError(
-          body.error ??
-            "We couldn’t extract orders for this chat. Try again shortly."
+          "This row is still syncing. Refresh the page in a moment and try again."
         );
         return;
       }
-      router.push(`/dashboard/chats/${threadId}`);
-      router.refresh();
-    } finally {
-      setBusyThread(null);
-    }
-  }
+      setBusyThread(threadId);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/whatsapp/chat-threads/${threadId}/analyze`,
+          { method: "POST" }
+        );
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          setError(
+            body.error ??
+              "We couldn’t interpret this chat yet. Try again in a moment."
+          );
+          return;
+        }
+        await load();
+        router.refresh();
+      } finally {
+        setBusyThread(null);
+      }
+    },
+    [load, router]
+  );
 
   const needsLink = linkStatus !== "connected";
 
@@ -350,7 +355,7 @@ export function ChatsClient({
                 key={rowKey}
                 className="border-b border-border last:border-b-0"
               >
-                <div className="group flex items-stretch gap-2 px-2 py-2.5 transition-colors hover:bg-muted/40 sm:gap-3 sm:px-4 sm:py-3">
+                <div className="group grid grid-cols-[2.75rem_1fr_auto] items-center gap-x-2 gap-y-0 px-2 py-2.5 transition-colors hover:bg-muted/35 sm:grid-cols-[3rem_1fr_auto] sm:gap-x-3 sm:px-4 sm:py-3">
                   <div
                     className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary sm:size-12 sm:text-base"
                     aria-hidden
@@ -360,17 +365,17 @@ export function ChatsClient({
                   <Link
                     href={openHref}
                     className={cn(
-                      "min-w-0 flex-1 self-center rounded-md py-0.5 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring",
+                      "min-w-0 rounded-md py-0.5 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring",
                       !r.threadId && "pointer-events-none opacity-70"
                     )}
                     prefetch={Boolean(r.threadId)}
                   >
-                    <div className="flex items-baseline justify-between gap-2">
+                    <div className="flex min-w-0 items-start justify-between gap-2">
                       <p className="truncate text-[0.9375rem] font-semibold leading-tight text-foreground group-hover:text-primary sm:text-base">
                         {r.displayName}
                       </p>
                       <time
-                        className="shrink-0 text-[0.6875rem] tabular-nums text-muted-foreground sm:text-xs"
+                        className="shrink-0 text-right text-[0.6875rem] tabular-nums text-muted-foreground sm:text-xs"
                         dateTime={r.lastMessageAt ?? undefined}
                       >
                         {formatRelativeTime(r.lastMessageAt)}
@@ -383,12 +388,12 @@ export function ChatsClient({
                       {r.preview || "—"}
                     </p>
                     <span className="sr-only">
-                      Opens detail for{" "}
-                      {r.threadId ?? "conversation still syncing"}
+                      Open conversation with{" "}
+                      {r.threadId ? r.displayName : "this contact (syncing)"}
                     </span>
                   </Link>
 
-                  <div className="flex shrink-0 flex-col items-stretch justify-center gap-1 self-center sm:min-w-[8.5rem]">
+                  <div className="flex w-[5.5rem] shrink-0 flex-col items-stretch justify-center gap-1 justify-self-end sm:w-[7.5rem]">
                     <Button
                       type="button"
                       size="sm"
@@ -416,8 +421,8 @@ export function ChatsClient({
                       )}
                     </Button>
                     {!r.canAnalyze && r.threadId ? (
-                      <p className="hidden text-center text-[0.625rem] leading-tight text-muted-foreground sm:block">
-                        Up to date · {analyzedLabel ?? "recent"}
+                      <p className="text-center text-[0.625rem] leading-tight text-muted-foreground">
+                        Up to date{analyzedLabel ? ` · ${analyzedLabel}` : ""}
                       </p>
                     ) : null}
                   </div>

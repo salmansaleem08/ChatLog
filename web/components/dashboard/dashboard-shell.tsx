@@ -66,7 +66,10 @@ export function DashboardShell({
               const active =
                 href === "/dashboard"
                   ? pathname === "/dashboard"
-                  : pathname.startsWith(href);
+                  : href === "/dashboard/chats"
+                    ? pathname === "/dashboard/chats" ||
+                      pathname === "/dashboard/chats/"
+                    : pathname.startsWith(href);
               return (
                 <Link
                   key={href}

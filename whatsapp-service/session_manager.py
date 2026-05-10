@@ -569,6 +569,7 @@ class WhatsAppSessionManager:
         *,
         pass_num: int = -1,
         row_index: int = 0,
+        pass_jid_owner: Optional[Dict[str, int]] = None,
     ) -> bool:
         if not self._is_real_contact_sidebar_row(row):
             if pass_num == 0:
@@ -586,18 +587,18 @@ class WhatsAppSessionManager:
                 pass_num=pass_num,
                 row_index=row_index,
                 preview_name=name,
+                pass_jid_owner=pass_jid_owner,
             )
             if not jid:
-                if pass_num == 0:
-                    log.info(
-                        "list_chats row_jid business_id=%s row=%s name=%r "
-                        "outcome=skipped reason=no_jid method=%s detail=%s",
-                        self._business_id,
-                        row_index,
-                        (name or "")[:80],
-                        method,
-                        (detail or "")[:120],
-                    )
+                log.info(
+                    "list_chats row_jid business_id=%s row=%s name=%r "
+                    "outcome=skipped reason=no_jid final_method=%s detail=%s",
+                    self._business_id,
+                    row_index,
+                    (name or "")[:80],
+                    method,
+                    (detail or "")[:120],
+                )
                 return False
 
             digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
@@ -620,17 +621,18 @@ class WhatsAppSessionManager:
             last_ms = self._parse_sidebar_time(meta_text, meta_title_attr)
             display_name = name or ("+" + digits if digits else "Contact")
 
-            if pass_num == 0:
-                log.info(
-                    "list_chats row_jid business_id=%s row=%s name=%r outcome=merged "
-                    "method=%s jid=%s detail=%s",
-                    self._business_id,
-                    row_index,
-                    (name or "")[:80],
-                    method,
-                    jid.split("@")[0][:28],
-                    (detail or "")[:120],
-                )
+            if pass_jid_owner is not None:
+                pass_jid_owner[jid] = row_index
+            log.info(
+                "list_chats row_jid business_id=%s row=%s name=%r outcome=merged "
+                "method=%s jid=%s detail=%s",
+                self._business_id,
+                row_index,
+                (name or "")[:80],
+                method,
+                jid.split("@")[0][:28],
+                (detail or "")[:120],
+            )
 
             out[jid] = {
                 "chat_jid": jid,
@@ -641,14 +643,40 @@ class WhatsAppSessionManager:
             }
             return True
         except Exception as exc:
-            if pass_num == 0:
-                log.info(
-                    "list_chats row_jid business_id=%s row=%s outcome=error err=%s",
-                    self._business_id,
-                    row_index,
-                    exc,
-                )
+            log.info(
+                "list_chats row_jid business_id=%s row=%s outcome=error err=%s",
+                self._business_id,
+                row_index,
+                exc,
+            )
             return False
+
+    def _jid_accept_for_pass(
+        self,
+        jid: Optional[str],
+        *,
+        pass_jid_owner: Optional[Dict[str, int]],
+        row_index: int,
+        method: str,
+    ) -> bool:
+        """True if jid is new for this scroll pass or already owned by this row."""
+        if not jid:
+            return False
+        if pass_jid_owner is None:
+            return True
+        owner = pass_jid_owner.get(jid)
+        if owner is None or owner == row_index:
+            return True
+        log.info(
+            "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+            "method=%s outcome=rejected reason=duplicate_in_pass other_row=%s",
+            self._business_id,
+            row_index,
+            jid.split("@")[0][:32],
+            method,
+            owner,
+        )
+        return False
 
     def _resolve_jid_for_list_row(
         self,
@@ -657,9 +685,11 @@ class WhatsAppSessionManager:
         pass_num: int,
         row_index: int,
         preview_name: str,
+        pass_jid_owner: Optional[Dict[str, int]] = None,
     ) -> Tuple[Optional[str], str, Optional[str]]:
         """
-        Returns (jid, method, detail). method is a short tag for logs.
+        Returns (jid, method, detail). Rejects JIDs already assigned to another
+        row in the same scroll pass (shared DOM noise).
         """
         driver = self._driver
         if driver is None:
@@ -678,8 +708,22 @@ class WhatsAppSessionManager:
         if link_el is not None:
             href = (link_el.get_attribute("href") or "").strip()
             jid = self._jid_from_chat_href_including_groups(href)
-            if jid:
+            if jid and self._jid_accept_for_pass(
+                jid,
+                pass_jid_owner=pass_jid_owner,
+                row_index=row_index,
+                method="href_anchor",
+            ):
+                log.info(
+                    "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                    "method=href_anchor outcome=accepted",
+                    self._business_id,
+                    row_index,
+                    jid.split("@")[0][:32],
+                )
                 return jid, "href_anchor", href[:160]
+            if jid:
+                pass  # duplicate; try phone query below
             if "phone=" in href.lower():
                 try:
                     q = parse_qs(urlparse(href).query)
@@ -689,40 +733,120 @@ class WhatsAppSessionManager:
                             r"\d{10,15}", (vals[0] or "").strip()
                         ):
                             j = f"{vals[0].strip()}@c.us"
-                            return j, "href_phone_query", j
+                            if self._jid_accept_for_pass(
+                                j,
+                                pass_jid_owner=pass_jid_owner,
+                                row_index=row_index,
+                                method="href_phone_query",
+                            ):
+                                log.info(
+                                    "list_chats row_jid_candidate business_id=%s row=%s "
+                                    "candidate_jid=%s method=href_phone_query outcome=accepted",
+                                    self._business_id,
+                                    row_index,
+                                    j.split("@")[0][:32],
+                                )
+                                return j, "href_phone_query", j
                 except Exception:
                     pass
 
-        # Row subtree first — per-chat attrs. Ancestor walk was merging every row
-        # into the linked account id (e.g. 10683142@c.us) from high in the DOM.
         jid = self._jid_from_subtree_attr_scan(driver, row)
-        if jid:
+        if jid and self._jid_accept_for_pass(
+            jid,
+            pass_jid_owner=pass_jid_owner,
+            row_index=row_index,
+            method="subtree_attrs",
+        ):
+            log.info(
+                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                "method=subtree_attrs outcome=accepted",
+                self._business_id,
+                row_index,
+                jid.split("@")[0][:32],
+            )
             return jid, "subtree_attrs", None
 
         jid = WhatsAppSessionManager._jid_from_display_name_phone(preview_name)
-        if jid:
+        if jid and self._jid_accept_for_pass(
+            jid,
+            pass_jid_owner=pass_jid_owner,
+            row_index=row_index,
+            method="display_name_digits",
+        ):
+            log.info(
+                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                "method=display_name_digits outcome=accepted",
+                self._business_id,
+                row_index,
+                jid.split("@")[0][:32],
+            )
             return jid, "display_name_digits", None
 
         jid = self._jid_from_row_markup_residual(row)
-        if jid:
+        if jid and self._jid_accept_for_pass(
+            jid,
+            pass_jid_owner=pass_jid_owner,
+            row_index=row_index,
+            method="row_href_outerhtml_attr",
+        ):
+            log.info(
+                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                "method=row_href_outerhtml_attr outcome=accepted",
+                self._business_id,
+                row_index,
+                jid.split("@")[0][:32],
+            )
             return jid, "row_href_outerhtml_attr", None
 
         jid = self._jid_from_dom_ancestor_attr_scan(driver, row)
-        if jid:
+        if jid and self._jid_accept_for_pass(
+            jid,
+            pass_jid_owner=pass_jid_owner,
+            row_index=row_index,
+            method="ancestor_attrs",
+        ):
+            log.info(
+                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                "method=ancestor_attrs outcome=accepted",
+                self._business_id,
+                row_index,
+                jid.split("@")[0][:32],
+            )
             return jid, "ancestor_attrs", None
 
         if self._list_chats_row_click_budget > 0:
             self._list_chats_row_click_budget -= 1
             jid_c = self._jid_from_row_open_chat_url(driver, row)
-            if jid_c:
+            if jid_c and self._jid_accept_for_pass(
+                jid_c,
+                pass_jid_owner=pass_jid_owner,
+                row_index=row_index,
+                method="click_navigate",
+            ):
+                log.info(
+                    "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                    "method=click_navigate outcome=accepted budget_left=%s",
+                    self._business_id,
+                    row_index,
+                    jid_c.split("@")[0][:32],
+                    self._list_chats_row_click_budget,
+                )
                 return (
                     jid_c,
                     "click_navigate",
                     f"budget_left={self._list_chats_row_click_budget}",
                 )
+            if jid_c:
+                log.info(
+                    "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
+                    "method=click_navigate outcome=rejected reason=duplicate_in_pass",
+                    self._business_id,
+                    row_index,
+                    jid_c.split("@")[0][:32],
+                )
             return (
                 None,
-                "click_navigate_failed",
+                "click_navigate_failed_or_duplicate",
                 f"budget_left={self._list_chats_row_click_budget}",
             )
 
@@ -973,6 +1097,8 @@ class WhatsAppSessionManager:
         last_total = -1
         stuck_rounds = 0
         for pass_num in range(max_passes):
+            # JID → first row_index in this scroll pass; detects shared DOM ids.
+            pass_jid_owner: Dict[str, int] = {}
             rows, counts = self._gather_sidebar_candidate_rows(driver)
             real_rows = [r for r in rows if self._is_real_contact_sidebar_row(r)]
             merged_this_pass = 0
@@ -997,7 +1123,11 @@ class WhatsAppSessionManager:
                             exc,
                         )
                 if self._try_merge_sidebar_row(
-                    row, out, pass_num=pass_num, row_index=row_index
+                    row,
+                    out,
+                    pass_num=pass_num,
+                    row_index=row_index,
+                    pass_jid_owner=pass_jid_owner,
                 ):
                     merged_this_pass += 1
             merged_after = len(out)
@@ -1243,7 +1373,7 @@ class WhatsAppSessionManager:
             # Wait for real contact rows, not an empty virtualized shell.
             self._wait_for_real_sidebar_chats(driver)
 
-            self._list_chats_row_click_budget = 5
+            self._list_chats_row_click_budget = 20
 
             aggregated: Dict[str, Dict[str, Any]] = {}
             env_scroll = os.environ.get(
@@ -1378,12 +1508,22 @@ class WhatsAppSessionManager:
                 const el = arguments[0];
                 const chatList = document.querySelector(
                   '[data-testid="chat-list"]');
+                const allRows = chatList
+                  ? Array.from(chatList.querySelectorAll(
+                      '[data-testid="cell-frame-container"]'))
+                  : [];
                 const out = [];
                 let p = el;
-                for (let i = 0; i < 5 && p; i++) {
+                for (let i = 0; i < 8 && p; i++) {
                   if (chatList && (!chatList.contains(p) || p === chatList)) {
                     break;
                   }
+                  let rowsUnder = 0;
+                  for (let j = 0; j < allRows.length; j++) {
+                    const r = allRows[j];
+                    if (r !== p && p.contains(r)) rowsUnder++;
+                  }
+                  if (rowsUnder > 1) break;
                   if (p.attributes) {
                     for (const a of p.attributes) {
                       const v = (a.value || '').trim();
