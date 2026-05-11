@@ -3,13 +3,13 @@ import { NextResponse } from "next/server";
 import {
   automationConfigured,
   automationFetchLong,
-  AUTOMATION_FETCH_VERCEL_SAFE_MS,
+  AUTOMATION_FETCH_MESSAGES_MS,
   describeAutomationReachabilityError,
 } from "@/lib/chatlog-automation";
 import { createClient } from "@/lib/supabase/server";
 
-/** Loads WhatsApp snapshot only — stays within typical ~60s platform caps. */
-export const maxDuration = 60;
+/** Python completes in <25s; 300s gives a wide safety net for the platform. */
+export const maxDuration = 300;
 
 type ChatMessageVm = {
   role: "customer" | "business";
@@ -115,14 +115,14 @@ export async function GET(
     console.info("[chat_messages] step=automation_fetch_start", {
       threadId,
       waChatJid,
-      timeoutMs: AUTOMATION_FETCH_VERCEL_SAFE_MS,
+      timeoutMs: AUTOMATION_FETCH_MESSAGES_MS,
       routeElapsedMs: waFetchStart - routeStart,
     });
 
     const res = await automationFetchLong(
       `/whatsapp/chat/messages?${qs}`,
       { method: "GET" },
-      AUTOMATION_FETCH_VERCEL_SAFE_MS
+      AUTOMATION_FETCH_MESSAGES_MS
     );
 
     const waFetchElapsed = Date.now() - waFetchStart;
@@ -261,7 +261,7 @@ export async function GET(
     if (e instanceof Error && e.name === "AbortError") {
       console.error("[chat_messages] step=automation_abort_timeout", {
         threadId,
-        timeoutMs: AUTOMATION_FETCH_VERCEL_SAFE_MS,
+        timeoutMs: AUTOMATION_FETCH_MESSAGES_MS,
         routeElapsedMs: Date.now() - routeStart,
       });
       return NextResponse.json(

@@ -69,6 +69,10 @@ export async function automationFetch(
 /** Default ceiling under typical Vercel Hobby ~60s route limits (leave headroom). */
 export const AUTOMATION_FETCH_VERCEL_SAFE_MS = 55_000;
 
+/** Extended ceiling for the messages route — Python now returns in <25s so this
+ *  is a permissive safety net that fits inside the 300s maxDuration budget. */
+export const AUTOMATION_FETCH_MESSAGES_MS = 280_000;
+
 /**
  * Long-running automation calls (e.g. open chat + read history in browser).
  * Aborts if the request exceeds the timeout so the route can return an error

@@ -2115,7 +2115,15 @@ class WhatsAppSessionManager:
         return int(time.time() * 1000)
 
     def fetch_chat_messages(self, chat_jid: str, max_messages: int = 260) -> Dict[str, Any]:
+        t_start = time.time()
         normalized = self._jid_suffix_for_chat_url(chat_jid)
+        deadline = t_start + 25.0
+
+        log.info(
+            "fetch_chat_messages start business_id=%s jid=%s",
+            self._business_id,
+            normalized,
+        )
 
         with self._lock:
             driver = self._driver
@@ -2124,96 +2132,239 @@ class WhatsAppSessionManager:
             if not self._detect_logged_in(driver):
                 raise RuntimeError("not_logged_in")
 
-            slug = quote(normalized, safe="")
-            target = WA_URL.rstrip("/") + f"/chat/{slug}"
-            driver.set_page_load_timeout(120)
-            driver.get(target)
-
+            # Step 1: Click the matching sidebar row — no full page navigation.
+            # jid_local is the phone-number part before "@"; it appears verbatim
+            # in sidebar hrefs regardless of URL-encoding of the @ sign.
+            jid_local = normalized.split("@")[0]
+            clicked: bool = False
             try:
-                WebDriverWait(driver, 85).until(
-                    EC.presence_of_element_located(
-                        (
-                            By.CSS_SELECTOR,
-                            '[data-testid="conversation-panel-wrapper"], '
-                            '[data-testid="conversation-panel-messages"]',
-                        )
+                clicked = bool(
+                    driver.execute_script(
+                        """
+                        var jidLocal = arguments[0];
+                        var links = document.querySelectorAll(
+                            '#pane-side a[href*="/chat/"], #pane-side [href*="/chat/"]'
+                        );
+                        for (var i = 0; i < links.length; i++) {
+                            var h = links[i].getAttribute('href') || '';
+                            if (h.indexOf(jidLocal) !== -1) {
+                                links[i].click();
+                                return true;
+                            }
+                        }
+                        var containers = document.querySelectorAll(
+                            '[data-testid="cell-frame-container"]'
+                        );
+                        for (var j = 0; j < containers.length; j++) {
+                            var inner = containers[j].querySelector(
+                                'a[href*="/chat/"], [href*="/chat/"]'
+                            );
+                            if (inner) {
+                                var ih = inner.getAttribute('href') || '';
+                                if (ih.indexOf(jidLocal) !== -1) {
+                                    inner.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                        """,
+                        jid_local,
                     )
                 )
             except Exception as exc:
-                raise RuntimeError("conversation_timeout") from exc
-
-            deadline = time.time() + 12.0
-            while time.time() < deadline:
-                driver.execute_script(
-                    "const main=document.querySelector('#main');"
-                    "if(main){main.scrollTop=Math.max(0,main.scrollTop-1400)}"
+                log.warning(
+                    "fetch_chat_messages sidebar_click_error jid=%s: %s",
+                    normalized,
+                    exc,
                 )
-                time.sleep(0.28)
 
-            containers = driver.find_elements(
-                By.CSS_SELECTOR,
-                '[data-testid="msg-container"]',
+            if not clicked:
+                log.info(
+                    "fetch_chat_messages sidebar_click_miss jid=%s falling_back_to_get",
+                    normalized,
+                )
+                slug = quote(normalized, safe="")
+                target = WA_URL.rstrip("/") + f"/chat/{slug}"
+                try:
+                    driver.set_page_load_timeout(20)
+                    driver.get(target)
+                except Exception as exc:
+                    log.warning(
+                        "fetch_chat_messages driver_get_error jid=%s: %s",
+                        normalized,
+                        exc,
+                    )
+
+            log.info(
+                "fetch_chat_messages nav_done jid=%s elapsed_ms=%.0f clicked=%s",
+                normalized,
+                (time.time() - t_start) * 1000,
+                clicked,
             )
 
+            # Step 2: Wait only for the first message bubble to appear.
+            remaining = deadline - time.time()
+            if remaining < 2.0:
+                log.warning(
+                    "fetch_chat_messages deadline_exceeded_before_bubble jid=%s elapsed_ms=%.0f",
+                    normalized,
+                    (time.time() - t_start) * 1000,
+                )
+                now_ms = int(time.time() * 1000)
+                return {
+                    "chat_jid": normalized,
+                    "transcript": "",
+                    "latest_message_iso": datetime.fromtimestamp(
+                        now_ms / 1000, tz=timezone.utc
+                    ).isoformat(),
+                    "messages": [],
+                }
+
+            try:
+                WebDriverWait(driver, max(2.0, remaining - 1.0)).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, '[data-testid="msg-container"]')
+                    )
+                )
+            except Exception:
+                log.warning(
+                    "fetch_chat_messages first_bubble_timeout jid=%s elapsed_ms=%.0f",
+                    normalized,
+                    (time.time() - t_start) * 1000,
+                )
+                now_ms = int(time.time() * 1000)
+                return {
+                    "chat_jid": normalized,
+                    "transcript": "",
+                    "latest_message_iso": datetime.fromtimestamp(
+                        now_ms / 1000, tz=timezone.utc
+                    ).isoformat(),
+                    "messages": [],
+                }
+
+            log.info(
+                "fetch_chat_messages first_bubble jid=%s elapsed_ms=%.0f",
+                normalized,
+                (time.time() - t_start) * 1000,
+            )
+
+            # Step 3: Extract all visible message bubbles in one JS call.
+            raw_msgs: List[Dict[str, Any]] = []
+            try:
+                raw_msgs = (
+                    driver.execute_script(
+                        """
+                        var limit = arguments[0];
+                        var containers = document.querySelectorAll(
+                            '[data-testid="msg-container"]'
+                        );
+                        var results = [];
+                        var start = containers.length > limit
+                            ? containers.length - limit : 0;
+                        for (var i = start; i < containers.length; i++) {
+                            var c = containers[i];
+                            try {
+                                var isOut = c.querySelector('.message-out') !== null;
+
+                                var textEls = c.querySelectorAll(
+                                    'span.selectable-text.copyable-text span'
+                                );
+                                if (!textEls.length)
+                                    textEls = c.querySelectorAll('.selectable-text span');
+                                var texts = [];
+                                for (var t = 0; t < textEls.length; t++) {
+                                    var tx = (textEls[t].textContent || '').trim();
+                                    if (tx) texts.push(tx);
+                                }
+
+                                var tsMs = 0;
+                                var dataId = c.getAttribute('data-id') || '';
+                                var m = dataId.match(/_(\d{10,})\b/);
+                                if (m) {
+                                    tsMs = parseInt(m[1], 10);
+                                    if (tsMs < 400000000000) tsMs *= 1000;
+                                }
+                                if (!tsMs) {
+                                    var tsEl = c.querySelector('[data-timestamp]');
+                                    if (tsEl) {
+                                        var raw = parseInt(
+                                            tsEl.getAttribute('data-timestamp'), 10
+                                        );
+                                        if (!isNaN(raw)) tsMs = raw * 1000;
+                                    }
+                                }
+
+                                var prefix = '';
+                                var metaEl = c.querySelector('[data-pre-plain-text]');
+                                if (metaEl) {
+                                    prefix = (
+                                        metaEl.getAttribute('data-pre-plain-text') || ''
+                                    ).replace(/ /g, ' ').trim();
+                                    prefix = prefix.split('\n')[0].substring(0, 120);
+                                }
+
+                                results.push({
+                                    isOut: isOut,
+                                    text: texts.join(' '),
+                                    tsMs: tsMs,
+                                    prefix: prefix
+                                });
+                            } catch (e) { /* skip malformed bubble */ }
+                        }
+                        return results;
+                        """,
+                        max_messages,
+                    )
+                    or []
+                )
+            except Exception as exc:
+                log.warning(
+                    "fetch_chat_messages js_extract_error jid=%s: %s",
+                    normalized,
+                    exc,
+                )
+
+            # Step 4: Build output from JS results.
             lines: List[str] = []
             message_rows: List[Dict[str, Any]] = []
             latest_seen_ms = -1
+            now_ms = int(time.time() * 1000)
 
-            for c in containers[-max_messages:]:
+            for item in raw_msgs:
                 try:
-                    out = bool(
-                        c.find_elements(
-                            By.XPATH,
-                            ".//*[contains(@class,'message-out')]",
-                        )
-                    )
-                    role = "You" if out else "Customer"
-                    side = "business" if out else "customer"
+                    is_out = bool(item.get("isOut"))
+                    role = "You" if is_out else "Customer"
+                    side = "business" if is_out else "customer"
+                    text = str(item.get("text") or "").strip()
+                    ts_ms = int(item.get("tsMs") or 0) or now_ms
+                    prefix = str(item.get("prefix") or "").strip()
 
-                    spans = c.find_elements(
-                        By.CSS_SELECTOR, "span.selectable-text.copyable-text span"
-                    )
-                    if not spans:
-                        spans = c.find_elements(
-                            By.CSS_SELECTOR, ".selectable-text span"
-                        )
-                    text = " ".join(
-                        (sp.text or "").strip() for sp in spans if (sp.text or "").strip()
-                    )
-
-                    prefix = ""
-                    for meta in c.find_elements(By.CSS_SELECTOR, "[data-pre-plain-text]"):
-                        pv = meta.get_attribute("data-pre-plain-text") or ""
-                        pv = pv.replace("\xa0", " ").strip()
-                        if pv:
-                            prefix = pv.split("\n")[0][:120]
-
-                    ms = self._message_timestamp_ms(c)
-                    if ms > latest_seen_ms:
-                        latest_seen_ms = ms
+                    if ts_ms > latest_seen_ms:
+                        latest_seen_ms = ts_ms
 
                     snippet = (
-                        f"[{ms}] {role}: {prefix + ' • ' if prefix else ''}"
-                        + (text or "").replace("\n", " ").strip()
+                        f"[{ts_ms}] {role}: {prefix + ' • ' if prefix else ''}"
+                        + text.replace("\n", " ").strip()
                     ).strip()
                     lines.append(snippet)
 
-                    iso_one = datetime.fromtimestamp(
-                        ms / 1000, tz=timezone.utc
-                    ).isoformat()
                     body_parts: List[str] = []
                     if prefix:
                         body_parts.append(prefix)
-                    if (text or "").strip():
-                        body_parts.append((text or "").strip())
+                    if text:
+                        body_parts.append(text)
                     body = "\n".join(body_parts).strip()
                     if not body:
                         continue
+                    iso_one = datetime.fromtimestamp(
+                        ts_ms / 1000, tz=timezone.utc
+                    ).isoformat()
                     message_rows.append(
                         {
                             "role": side,
                             "text": body,
-                            "timestamp_ms": ms,
+                            "timestamp_ms": ts_ms,
                             "timestamp_iso": iso_one,
                         }
                     )
@@ -2221,10 +2372,18 @@ class WhatsAppSessionManager:
                     continue
 
             transcript = "\n".join(line for line in lines if line)
-            fallback_ms = latest_seen_ms if latest_seen_ms > 0 else int(time.time() * 1000)
+            fallback_ms = latest_seen_ms if latest_seen_ms > 0 else now_ms
             latest_iso = datetime.fromtimestamp(
                 fallback_ms / 1000, tz=timezone.utc
             ).isoformat()
+
+            log.info(
+                "fetch_chat_messages done jid=%s messages=%d elapsed_ms=%.0f",
+                normalized,
+                len(message_rows),
+                (time.time() - t_start) * 1000,
+            )
+
             return {
                 "chat_jid": normalized,
                 "transcript": transcript,
