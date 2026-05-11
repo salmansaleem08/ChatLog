@@ -1412,7 +1412,22 @@ class WhatsAppSessionManager:
                     )
                     self._enrich_chats_via_row_clicks(driver, aggregated)
 
-            chats: List[Dict[str, Any]] = list(aggregated.values())
+            # Final safety dedup: re-key by validated canonical JID so that any
+            # two entries that _validate_jid resolves to the same string collapse
+            # into one (first occurrence wins).  This prevents the DB from ever
+            # receiving the same JID twice in a single upsert batch.
+            deduped: Dict[str, Dict[str, Any]] = {}
+            for raw_jid, entry in aggregated.items():
+                canonical = WhatsAppSessionManager._validate_jid(raw_jid) or raw_jid
+                if canonical not in deduped:
+                    if canonical != raw_jid:
+                        entry = dict(entry)
+                        entry["chat_jid"] = canonical
+                        entry["phone_digits"] = "".join(
+                            ch for ch in canonical.split("@")[0] if ch.isdigit()
+                        )
+                    deduped[canonical] = entry
+            chats: List[Dict[str, Any]] = list(deduped.values())
 
             def _sort_key(entry: Dict[str, Any]):
                 ms = entry.get("last_message_at_ms") or 0
@@ -1956,6 +1971,11 @@ class WhatsAppSessionManager:
                             jid = f"{ph.strip()}@c.us"
                     except Exception:
                         pass
+                if not jid:
+                    continue
+                # Normalise through the same gate used by the scroll path so that
+                # @s.whatsapp.net → @c.us collapses and the dict key is canonical.
+                jid = WhatsAppSessionManager._validate_jid(jid)
                 if not jid:
                     continue
                 if jid in out:

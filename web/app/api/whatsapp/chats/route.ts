@@ -250,12 +250,27 @@ export async function GET() {
             : null,
       }));
 
+    // Deduplicate by wa_chat_jid (keep first occurrence) so the upsert never
+    // sees the same JID twice — PostgreSQL rejects "ON CONFLICT DO UPDATE"
+    // when two rows in the same batch resolve to the same conflict target.
+    const seenJids = new Set<string>();
+    const uniqueRows = rows.filter((row) => {
+      if (seenJids.has(row.wa_chat_jid)) return false;
+      seenJids.add(row.wa_chat_jid);
+      return true;
+    });
+
     let storedLookup = new Map<string, StoredThreadRow>();
 
-    if (rows.length > 0) {
+    const dupCount = rows.length - uniqueRows.length;
+    if (dupCount > 0) {
+      console.warn("[whatsapp/chats] deduped_jids", { dropped: dupCount, kept: uniqueRows.length });
+    }
+
+    if (uniqueRows.length > 0) {
       const { error: upErr } = await supabase
         .from("whatsapp_chat_threads")
-        .upsert(rows, {
+        .upsert(uniqueRows, {
           onConflict: "business_id,wa_chat_jid_md5",
         });
 
