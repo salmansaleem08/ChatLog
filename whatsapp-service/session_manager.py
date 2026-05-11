@@ -702,13 +702,61 @@ class WhatsAppSessionManager:
         pass_jid_owner: Optional[Dict[str, int]] = None,
     ) -> Tuple[Optional[str], str, Optional[str]]:
         """
-        Returns (jid, method, detail). Rejects JIDs already assigned to another
-        row in the same scroll pass (shared DOM noise).
+        Returns (jid, method, detail). Each candidate is validated via
+        _validate_jid AND checked for pass-level duplicate ownership before
+        being accepted. A validation or duplicate rejection moves on to the
+        next method — it never skips the row entirely.
+
+        Method order (earliest wins):
+          1. href_anchor / href_phone_query  — most reliable; WhatsApp URL encodes JID
+          2. display_name_digits             — contacts whose name IS a phone number
+          3. subtree_attrs                   — DOM attribute scan (may find shared IDs)
+          4. row_href_outerhtml_attr         — HTML residue / outerHTML patterns
+          5. ancestor_attrs                  — walk up DOM inside chat-list boundary
+          6. click_navigate                  — ground-truth URL read (budget-gated)
         """
         driver = self._driver
         if driver is None:
             return None, "no_driver", None
 
+        def _accept(raw_jid: Optional[str], method: str) -> Optional[str]:
+            """
+            Validate raw_jid then check pass-level dedup.
+            Logs the rejection reason and returns None on failure so the caller
+            can continue to the next extraction method.
+            Returns the normalised JID on success.
+            """
+            if not raw_jid:
+                return None
+            vj = WhatsAppSessionManager._validate_jid(raw_jid)
+            if not vj:
+                log.info(
+                    "list_chats row_jid_candidate business_id=%s row=%s "
+                    "candidate_jid=%s method=%s outcome=rejected reason=invalid_format",
+                    self._business_id,
+                    row_index,
+                    raw_jid.split("@")[0][:32],
+                    method,
+                )
+                return None
+            if not self._jid_accept_for_pass(
+                vj,
+                pass_jid_owner=pass_jid_owner,
+                row_index=row_index,
+                method=method,
+            ):
+                return None
+            log.info(
+                "list_chats row_jid_candidate business_id=%s row=%s "
+                "candidate_jid=%s method=%s outcome=accepted",
+                self._business_id,
+                row_index,
+                vj.split("@")[0][:32],
+                method,
+            )
+            return vj
+
+        # ── 1. href_anchor / href_phone_query ────────────────────────────────
         link_el = None
         for sel in (
             'a[href*="/chat/"]',
@@ -721,23 +769,9 @@ class WhatsAppSessionManager:
                 break
         if link_el is not None:
             href = (link_el.get_attribute("href") or "").strip()
-            jid = self._jid_from_chat_href_including_groups(href)
-            if jid and self._jid_accept_for_pass(
-                jid,
-                pass_jid_owner=pass_jid_owner,
-                row_index=row_index,
-                method="href_anchor",
-            ):
-                log.info(
-                    "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                    "method=href_anchor outcome=accepted",
-                    self._business_id,
-                    row_index,
-                    jid.split("@")[0][:32],
-                )
-                return jid, "href_anchor", href[:160]
-            if jid:
-                pass  # duplicate; try phone query below
+            vj = _accept(self._jid_from_chat_href_including_groups(href), "href_anchor")
+            if vj:
+                return vj, "href_anchor", href[:160]
             if "phone=" in href.lower():
                 try:
                     q = parse_qs(urlparse(href).query)
@@ -746,118 +780,56 @@ class WhatsAppSessionManager:
                         if vals and re.fullmatch(
                             r"\d{10,15}", (vals[0] or "").strip()
                         ):
-                            j = f"{vals[0].strip()}@c.us"
-                            if self._jid_accept_for_pass(
-                                j,
-                                pass_jid_owner=pass_jid_owner,
-                                row_index=row_index,
-                                method="href_phone_query",
-                            ):
-                                log.info(
-                                    "list_chats row_jid_candidate business_id=%s row=%s "
-                                    "candidate_jid=%s method=href_phone_query outcome=accepted",
-                                    self._business_id,
-                                    row_index,
-                                    j.split("@")[0][:32],
-                                )
-                                return j, "href_phone_query", j
+                            vj = _accept(f"{vals[0].strip()}@c.us", "href_phone_query")
+                            if vj:
+                                return vj, "href_phone_query", vj
                 except Exception:
                     pass
 
-        jid = self._jid_from_subtree_attr_scan(driver, row)
-        if jid and self._jid_accept_for_pass(
-            jid,
-            pass_jid_owner=pass_jid_owner,
-            row_index=row_index,
-            method="subtree_attrs",
-        ):
-            log.info(
-                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                "method=subtree_attrs outcome=accepted",
-                self._business_id,
-                row_index,
-                jid.split("@")[0][:32],
-            )
-            return jid, "subtree_attrs", None
+        # ── 2. display_name_digits (before subtree_attrs) ────────────────────
+        # Contacts whose display name IS a phone number (e.g. "+92 314 7811141")
+        # are resolved here immediately without DOM attribute scanning.
+        vj = _accept(
+            WhatsAppSessionManager._jid_from_display_name_phone(preview_name),
+            "display_name_digits",
+        )
+        if vj:
+            return vj, "display_name_digits", None
 
-        jid = WhatsAppSessionManager._jid_from_display_name_phone(preview_name)
-        if jid and self._jid_accept_for_pass(
-            jid,
-            pass_jid_owner=pass_jid_owner,
-            row_index=row_index,
-            method="display_name_digits",
-        ):
-            log.info(
-                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                "method=display_name_digits outcome=accepted",
-                self._business_id,
-                row_index,
-                jid.split("@")[0][:32],
-            )
-            return jid, "display_name_digits", None
+        # ── 3. subtree_attrs ─────────────────────────────────────────────────
+        # May find shared page-level IDs (e.g. 9-digit internal IDs); those are
+        # now rejected by _accept → _validate_jid instead of stopping the row.
+        vj = _accept(self._jid_from_subtree_attr_scan(driver, row), "subtree_attrs")
+        if vj:
+            return vj, "subtree_attrs", None
 
-        jid = self._jid_from_row_markup_residual(row)
-        if jid and self._jid_accept_for_pass(
-            jid,
-            pass_jid_owner=pass_jid_owner,
-            row_index=row_index,
-            method="row_href_outerhtml_attr",
-        ):
-            log.info(
-                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                "method=row_href_outerhtml_attr outcome=accepted",
-                self._business_id,
-                row_index,
-                jid.split("@")[0][:32],
-            )
-            return jid, "row_href_outerhtml_attr", None
+        # ── 4. row_href_outerhtml_attr ────────────────────────────────────────
+        vj = _accept(self._jid_from_row_markup_residual(row), "row_href_outerhtml_attr")
+        if vj:
+            return vj, "row_href_outerhtml_attr", None
 
-        jid = self._jid_from_dom_ancestor_attr_scan(driver, row)
-        if jid and self._jid_accept_for_pass(
-            jid,
-            pass_jid_owner=pass_jid_owner,
-            row_index=row_index,
-            method="ancestor_attrs",
-        ):
-            log.info(
-                "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                "method=ancestor_attrs outcome=accepted",
-                self._business_id,
-                row_index,
-                jid.split("@")[0][:32],
-            )
-            return jid, "ancestor_attrs", None
+        # ── 5. ancestor_attrs ────────────────────────────────────────────────
+        vj = _accept(self._jid_from_dom_ancestor_attr_scan(driver, row), "ancestor_attrs")
+        if vj:
+            return vj, "ancestor_attrs", None
 
+        # ── 6. click_navigate (ground truth, budget-gated) ───────────────────
         if self._list_chats_row_click_budget > 0:
             self._list_chats_row_click_budget -= 1
             jid_c = self._jid_from_row_open_chat_url(driver, row)
-            if jid_c and self._jid_accept_for_pass(
-                jid_c,
-                pass_jid_owner=pass_jid_owner,
-                row_index=row_index,
-                method="click_navigate",
-            ):
+            vj = _accept(jid_c, "click_navigate")
+            if vj:
                 log.info(
-                    "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                    "method=click_navigate outcome=accepted budget_left=%s",
+                    "list_chats row_jid_candidate business_id=%s row=%s "
+                    "candidate_jid=%s method=click_navigate outcome=accepted budget_left=%s",
                     self._business_id,
                     row_index,
-                    jid_c.split("@")[0][:32],
+                    vj.split("@")[0][:32],
                     self._list_chats_row_click_budget,
                 )
-                return (
-                    jid_c,
-                    "click_navigate",
-                    f"budget_left={self._list_chats_row_click_budget}",
-                )
-            if jid_c:
-                log.info(
-                    "list_chats row_jid_candidate business_id=%s row=%s candidate_jid=%s "
-                    "method=click_navigate outcome=rejected reason=duplicate_in_pass",
-                    self._business_id,
-                    row_index,
-                    jid_c.split("@")[0][:32],
-                )
+                return vj, "click_navigate", f"budget_left={self._list_chats_row_click_budget}"
+            # click already happened (browser navigated away and back); must return
+            # here regardless — cannot fall through to another method.
             return (
                 None,
                 "click_navigate_failed_or_duplicate",
