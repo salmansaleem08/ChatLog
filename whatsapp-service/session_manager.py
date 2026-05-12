@@ -2607,62 +2607,45 @@ class WhatsAppSessionManager:
                     "messages": [],
                 }
 
-            # Step 3: Extract visible TEXT message bubbles in one JS call.
+            # Step 3: Extract text message bubbles via two DOM strategies.
             raw_msgs: List[Dict[str, Any]] = []
             try:
                 raw_msgs = (
                     driver.execute_script(
                         """
                         var limit = arguments[0];
-                        var bsel  = arguments[1];
-                        var found = document.querySelectorAll('[data-testid="msg-container"]');
-                        if (!found.length) found = document.querySelectorAll('#main [data-id]');
-                        if (!found.length && bsel) found = document.querySelectorAll(bsel);
-                        if (!found.length) found = document.querySelectorAll('[data-testid*="msg-"]');
-                        var results = [];
-                        var si = (found.length > limit) ? found.length - limit : 0;
-                        for (var i = si; i < found.length; i++) {
-                            var c = found[i];
-                            var isOut = !!(c.classList.contains('message-out') ||
-                                           c.querySelector('.message-out'));
-                            var tel = c.querySelectorAll('span.selectable-text.copyable-text span');
-                            if (!tel.length) tel = c.querySelectorAll('.selectable-text span');
-                            if (!tel.length) tel = c.querySelectorAll('span[copyable-text]');
-                            var parts = [];
-                            for (var t = 0; t < tel.length; t++) {
-                                var tx = (tel[t].textContent || '').trim();
-                                if (tx) parts.push(tx);
+                        var out = [];
+
+                        function dirOut(el) {
+                            for (var d = 0; d < 10 && el; d++) {
+                                if (el.classList && el.classList.contains('message-out')) return true;
+                                el = el.parentElement;
                             }
-                            if (parts.length === 0) {
-                                results.push(null);
-                            } else {
-                                var tsMs = 0;
-                                var did = c.getAttribute('data-id') || '';
-                                var rm = did.match(/[_]([0-9]{9,13})[_@]/);
-                                if (!rm) rm = did.match(/[_]([0-9]{9,13})$/);
-                                if (rm) {
-                                    tsMs = parseInt(rm[1], 10);
-                                    if (tsMs < 400000000000) tsMs = tsMs * 1000;
-                                }
-                                if (!tsMs) {
-                                    var tel2 = c.querySelector('[data-timestamp]');
-                                    if (tel2) {
-                                        var traw = parseInt(tel2.getAttribute('data-timestamp'), 10);
-                                        if (traw > 0) tsMs = traw * 1000;
-                                    }
-                                }
-                                results.push({
-                                    isOut: isOut,
-                                    text: parts.join(' '),
-                                    tsMs: tsMs,
-                                    prefix: ''
-                                });
+                            return false;
+                        }
+
+                        var metas = document.querySelectorAll('[data-pre-plain-text]');
+                        for (var i = 0; i < metas.length; i++) {
+                            var meta = metas[i];
+                            var sp = meta.querySelector('span[copyable-text]');
+                            if (!sp) continue;
+                            var txt = (sp.textContent || '').trim();
+                            if (txt) out.push({ isOut: dirOut(meta), text: txt, tsMs: 0 });
+                        }
+
+                        if (!out.length) {
+                            var spans = document.querySelectorAll('span[copyable-text]');
+                            for (var j = 0; j < spans.length; j++) {
+                                var s = spans[j];
+                                if (s.querySelector('span[copyable-text]')) continue;
+                                var t = (s.textContent || '').trim();
+                                if (t) out.push({ isOut: dirOut(s), text: t, tsMs: 0 });
                             }
                         }
-                        return results.filter(function(x){ return x !== null; });
+
+                        return out.slice(-limit);
                         """,
                         max_messages,
-                        bubble_sel or "",
                     )
                     or []
                 )
