@@ -2362,7 +2362,76 @@ class WhatsAppSessionManager:
             driver = self._driver
             if driver is None:
                 raise RuntimeError("driver_not_initialized")
-            if not self._detect_logged_in(driver):
+
+            # Log current browser URL so pasted logs show browser state at entry.
+            cur_url = ""
+            try:
+                cur_url = driver.current_url or ""
+            except Exception:
+                pass
+            log.info(
+                "fetch_chat_messages browser_state jid=%s url=%s elapsed_ms=%.0f",
+                normalized,
+                cur_url[:80],
+                (time.time() - t_start) * 1000,
+            )
+
+            # If the browser landed on a thread URL (e.g. left over from
+            # _click_remediate) or navigated away from WhatsApp entirely,
+            # return to the home sidebar before the login check.  Otherwise
+            # _detect_logged_in may see only a conversation panel (no sidebar)
+            # and return False even though the session is fully active.
+            if WhatsAppSessionManager._chrome_url_has_thread(cur_url) or (
+                cur_url and not cur_url.startswith("https://web.whatsapp.com")
+            ):
+                log.info(
+                    "fetch_chat_messages pre_nav_home jid=%s url=%s",
+                    normalized,
+                    cur_url[:80],
+                )
+                try:
+                    driver.set_page_load_timeout(15)
+                    driver.get(WA_URL)
+                    time.sleep(0.8)
+                    cur_url = driver.current_url or ""
+                except Exception as nav_exc:
+                    log.warning(
+                        "fetch_chat_messages pre_nav_error jid=%s: %s",
+                        normalized,
+                        nav_exc,
+                    )
+
+            logged_in = self._detect_logged_in(driver)
+            if not logged_in:
+                # Capture selector diagnostics before the retry so they appear
+                # in logs even if the retry succeeds.
+                try:
+                    diag = {
+                        "default_user": bool(driver.find_elements(By.CSS_SELECTOR, '[data-testid="default-user"]')),
+                        "conv_panel": bool(driver.find_elements(By.CSS_SELECTOR, '[data-testid="conversation-panel-wrapper"]')),
+                        "chat_list": bool(driver.find_elements(By.CSS_SELECTOR, '[data-testid="chat-list"]')),
+                        "cell_frame": bool(driver.find_elements(By.CSS_SELECTOR, '[data-testid="cell-frame-container"]')),
+                        "pane_links": bool(driver.find_elements(By.CSS_SELECTOR, '#pane-side a[href*="/chat/"]')),
+                    }
+                except Exception:
+                    diag = {}
+                log.warning(
+                    "fetch_chat_messages login_check_failed jid=%s url=%s selectors=%s elapsed_ms=%.0f — retrying in 1.5s",
+                    normalized,
+                    cur_url[:80],
+                    diag,
+                    (time.time() - t_start) * 1000,
+                )
+                time.sleep(1.5)
+                logged_in = self._detect_logged_in(driver)
+                log.info(
+                    "fetch_chat_messages login_check_retry jid=%s logged_in=%s elapsed_ms=%.0f",
+                    normalized,
+                    logged_in,
+                    (time.time() - t_start) * 1000,
+                )
+
+            if not logged_in:
                 raise RuntimeError("not_logged_in")
 
             # Step 1: Click the matching sidebar row — no full page navigation.
@@ -2615,10 +2684,23 @@ class WhatsAppSessionManager:
                 )
             except Exception as exc:
                 log.warning(
-                    "fetch_chat_messages js_extract_error jid=%s: %s",
+                    "fetch_chat_messages js_extract_error jid=%s bubble_sel=%s exc_type=%s: %s",
                     normalized,
-                    exc,
+                    bubble_sel,
+                    type(exc).__name__,
+                    str(exc)[:400],
                 )
+                raise RuntimeError("js_extract_failed") from exc
+
+            if bubble_sel and not raw_msgs:
+                log.warning(
+                    "fetch_chat_messages js_extract_empty jid=%s bubble_sel=%s elapsed_ms=%.0f"
+                    " — bubbles found in DOM but extraction returned 0 rows",
+                    normalized,
+                    bubble_sel,
+                    (time.time() - t_start) * 1000,
+                )
+                raise RuntimeError("js_extract_empty")
 
             # Step 4: Build output from JS results.
             lines: List[str] = []

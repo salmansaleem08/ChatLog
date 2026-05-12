@@ -161,11 +161,21 @@ export async function GET(
         httpStatus: res.status,
         detail: detail.slice(0, 400),
       });
+
+      let userError = "We couldn’t load messages for this conversation. Try again shortly.";
+      if (res.status === 409) {
+        userError =
+          "Your WhatsApp session is not active. Open Settings to reconnect, then try again.";
+      } else if (
+        detail.includes("js_extract_failed") ||
+        detail.includes("js_extract_empty")
+      ) {
+        userError =
+          "Messages couldn’t be read from WhatsApp. Try again in a moment.";
+      }
+
       return NextResponse.json(
-        {
-          error: "We couldn’t load messages for this conversation. Try again shortly.",
-          ok: false,
-        },
+        { error: userError, ok: false },
         { status: res.status >= 400 && res.status < 600 ? res.status : 502 }
       );
     }

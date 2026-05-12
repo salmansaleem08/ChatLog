@@ -173,8 +173,16 @@ def whatsapp_chat_messages(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         reason = str(exc)
+        status = 409 if reason == "not_logged_in" else 500
+        log.warning(
+            "whatsapp_chat_messages failed business_id=%s jid=%s reason=%s status=%d",
+            bid,
+            chat_jid,
+            reason,
+            status,
+        )
         raise HTTPException(
-            status_code=409 if reason == "not_logged_in" else 500,
+            status_code=status,
             detail=f"cannot_read_messages:{reason}",
         ) from exc
 

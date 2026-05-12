@@ -181,7 +181,7 @@ export async function fetchThreadMessagesSnapshot(
     return {
       ok: false,
       message:
-        "No readable messages were found for this conversation yet.",
+        "No messages were found in this conversation. Open the chat in WhatsApp to make sure it has messages, then try again.",
     };
   }
 
