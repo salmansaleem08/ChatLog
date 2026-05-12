@@ -2575,7 +2575,7 @@ class WhatsAppSessionManager:
 
                                 var tsMs = 0;
                                 var dataId = c.getAttribute('data-id') || '';
-                                var m = dataId.match(/_(\d{10,})\b/);
+                                var m = dataId.match(/_(\d{10,})(?:\D|$)/);
                                 if (m) {
                                     tsMs = parseInt(m[1], 10);
                                     if (tsMs < 400000000000) tsMs *= 1000;
@@ -2596,7 +2596,7 @@ class WhatsAppSessionManager:
                                     prefix = (
                                         metaEl.getAttribute('data-pre-plain-text') || ''
                                     ).replace(/ /g, ' ').trim();
-                                    prefix = prefix.split('\n')[0].substring(0, 120);
+                                    prefix = prefix.split('\\n')[0].substring(0, 120);
                                 }
 
                                 results.push({

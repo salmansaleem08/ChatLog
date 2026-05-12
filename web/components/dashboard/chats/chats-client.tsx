@@ -38,6 +38,7 @@ type ChatDiagnostics = {
 
 type ChatsPayload = {
   ok?: boolean;
+  fromCache?: boolean;
   serviceConfigured?: boolean;
   chats?: ChatRow[];
   whatsapp_link_status?: string;
@@ -87,6 +88,8 @@ export function ChatsClient({
   const [linkStatus, setLinkStatus] =
     useState<WhatsappLinkStatus>(initialLinkStatus);
   const [search, setSearch] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
   const [busyThread, setBusyThread] = useState<string | null>(null);
   const [busyThreadStep, setBusyThreadStep] = useState<AnalyzeStep | null>(null);
   const [analyzeRowError, setAnalyzeRowError] = useState<{
@@ -94,18 +97,28 @@ export function ChatsClient({
     message: string;
   } | null>(null);
 
-  const load = useCallback(async (options?: { silent?: boolean }) => {
+  const load = useCallback(
+    async (options?: { silent?: boolean; forceRefresh?: boolean }) => {
     const silent = options?.silent === true;
+    const forceRefresh = options?.forceRefresh === true;
     if (!silent) {
       setError(null);
       setWarning(null);
       setDiagnostics(null);
       setCopiedDiag(false);
-      setLoading(true);
+      if (forceRefresh) {
+        setSyncing(true);
+      } else {
+        setLoading(true);
+      }
     }
     try {
-      const res = await fetch("/api/whatsapp/chats");
+      const url = forceRefresh
+        ? "/api/whatsapp/chats?refresh=1"
+        : "/api/whatsapp/chats";
+      const res = await fetch(url);
       const data = (await res.json()) as ChatsPayload;
+      setFromCache(data.fromCache === true);
       if (!res.ok) {
         if (!silent) {
           setError(
@@ -146,6 +159,7 @@ export function ChatsClient({
     } finally {
       if (!silent) {
         setLoading(false);
+        setSyncing(false);
       }
     }
   }, []);
@@ -305,26 +319,41 @@ export function ChatsClient({
       {!needsLink ? (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="relative flex-1">
-          <Search
-            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name or phone…"
-            className="h-11 pl-10"
-            aria-label="Search chats"
-          />
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name or phone…"
+              className="h-11 pl-10"
+              aria-label="Search chats"
+            />
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="h-11 w-full sm:w-auto"
-            onClick={() => void load()}
-          >
-            Refresh
-          </Button>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 w-full sm:w-auto"
+              disabled={syncing}
+              onClick={() => void load({ forceRefresh: true })}
+            >
+              {syncing ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                  Syncing…
+                </>
+              ) : (
+                "Refresh"
+              )}
+            </Button>
+            {fromCache && !syncing ? (
+              <p className="text-right text-[0.6875rem] text-muted-foreground">
+                Showing saved · Refresh for latest
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
 

@@ -118,13 +118,53 @@ async function refreshWhatsappLinkFromAutomationProbe(
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const supabase = createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const isRefresh = new URL(request.url).searchParams.get("refresh") === "1";
+
+  // Serve from DB cache on non-refresh requests — avoids the 10-30s Python
+  // scrape on every page visit. The "Refresh" button passes ?refresh=1 to
+  // force a fresh scrape and update the cache.
+  if (!isRefresh) {
+    const { data: cached } = await supabase
+      .from("whatsapp_chat_threads")
+      .select(
+        [
+          "id",
+          "wa_chat_jid",
+          "phone_digits",
+          "contact_name",
+          "last_message_preview",
+          "last_analyzed_at",
+          "extraction_watermark_at",
+          "last_message_at",
+        ].join(",")
+      )
+      .eq("business_id", user.id);
+
+    if (Array.isArray(cached) && cached.length > 0) {
+      const { data: waProfile } = await supabase
+        .from("profiles")
+        .select("whatsapp_link_status")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      return NextResponse.json({
+        ok: true,
+        fromCache: true,
+        serviceConfigured: true,
+        chats: toChatPayloadFromStored(cached as unknown as StoredThreadRow[]),
+        whatsapp_link_status:
+          (waProfile?.whatsapp_link_status as string) ?? "disconnected",
+      });
+    }
   }
 
   if (!automationConfigured()) {
