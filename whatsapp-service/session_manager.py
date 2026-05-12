@@ -2607,90 +2607,59 @@ class WhatsAppSessionManager:
                     "messages": [],
                 }
 
-            # Step 3: Extract all visible message bubbles in one JS call.
-            # bubble_sel is the selector that confirmed DOM presence; pass it
-            # as a fallback container so Chrome uses the right elements.
+            # Step 3: Extract visible TEXT message bubbles in one JS call.
             raw_msgs: List[Dict[str, Any]] = []
             try:
                 raw_msgs = (
                     driver.execute_script(
                         """
                         var limit = arguments[0];
-                        var bubbleSel = arguments[1];
-
-                        var containers = document.querySelectorAll(
-                            '[data-testid="msg-container"]'
-                        );
-                        if (!containers.length)
-                            containers = document.querySelectorAll('#main [data-id]');
-                        if (!containers.length && bubbleSel)
-                            containers = document.querySelectorAll(bubbleSel);
-                        if (!containers.length)
-                            containers = document.querySelectorAll('[data-testid*="msg-"]');
-
+                        var bsel  = arguments[1];
+                        var found = document.querySelectorAll('[data-testid="msg-container"]');
+                        if (!found.length) found = document.querySelectorAll('#main [data-id]');
+                        if (!found.length && bsel) found = document.querySelectorAll(bsel);
+                        if (!found.length) found = document.querySelectorAll('[data-testid*="msg-"]');
                         var results = [];
-                        var start = containers.length > limit
-                            ? containers.length - limit : 0;
-                        for (var i = start; i < containers.length; i++) {
-                            var c = containers[i];
-                            try {
-                                var isOut = c.classList.contains('message-out') ||
-                                            c.querySelector('.message-out') !== null;
-
-                                var textEls = c.querySelectorAll(
-                                    'span.selectable-text.copyable-text span'
-                                );
-                                if (!textEls.length)
-                                    textEls = c.querySelectorAll('.selectable-text span');
-                                if (!textEls.length)
-                                    textEls = c.querySelectorAll('span[copyable-text]');
-                                var texts = [];
-                                for (var t = 0; t < textEls.length; t++) {
-                                    var tx = (textEls[t].textContent || '').trim();
-                                    if (tx) texts.push(tx);
-                                }
-
-                                // Skip non-text messages (photos, audio, video, docs).
-                                if (!texts.length) continue;
-
+                        var si = (found.length > limit) ? found.length - limit : 0;
+                        for (var i = si; i < found.length; i++) {
+                            var c = found[i];
+                            var isOut = !!(c.classList.contains('message-out') ||
+                                           c.querySelector('.message-out'));
+                            var tel = c.querySelectorAll('span.selectable-text.copyable-text span');
+                            if (!tel.length) tel = c.querySelectorAll('.selectable-text span');
+                            if (!tel.length) tel = c.querySelectorAll('span[copyable-text]');
+                            var parts = [];
+                            for (var t = 0; t < tel.length; t++) {
+                                var tx = (tel[t].textContent || '').trim();
+                                if (tx) parts.push(tx);
+                            }
+                            if (parts.length === 0) {
+                                results.push(null);
+                            } else {
                                 var tsMs = 0;
-                                var dataId = c.getAttribute('data-id') || '';
-                                var m = dataId.match(/_([0-9]{10,})[^0-9]/);
-                                if (!m) m = dataId.match(/_([0-9]{10,})$/);
-                                if (m) {
-                                    tsMs = parseInt(m[1], 10);
-                                    if (tsMs < 400000000000) tsMs *= 1000;
+                                var did = c.getAttribute('data-id') || '';
+                                var rm = did.match(/[_]([0-9]{9,13})[_@]/);
+                                if (!rm) rm = did.match(/[_]([0-9]{9,13})$/);
+                                if (rm) {
+                                    tsMs = parseInt(rm[1], 10);
+                                    if (tsMs < 400000000000) tsMs = tsMs * 1000;
                                 }
                                 if (!tsMs) {
-                                    var tsEl = c.querySelector('[data-timestamp]');
-                                    if (tsEl) {
-                                        var rawTs = parseInt(
-                                            tsEl.getAttribute('data-timestamp'), 10
-                                        );
-                                        if (!isNaN(rawTs)) tsMs = rawTs * 1000;
+                                    var tel2 = c.querySelector('[data-timestamp]');
+                                    if (tel2) {
+                                        var traw = parseInt(tel2.getAttribute('data-timestamp'), 10);
+                                        if (traw > 0) tsMs = traw * 1000;
                                     }
                                 }
-
-                                var prefix = '';
-                                var metaEl = c.querySelector('[data-pre-plain-text]');
-                                if (metaEl) {
-                                    prefix = (
-                                        metaEl.getAttribute('data-pre-plain-text') || ''
-                                    ).trim();
-                                    var nl = prefix.indexOf('\n');
-                                    if (nl >= 0) prefix = prefix.substring(0, nl);
-                                    prefix = prefix.substring(0, 120);
-                                }
-
                                 results.push({
                                     isOut: isOut,
-                                    text: texts.join(' '),
+                                    text: parts.join(' '),
                                     tsMs: tsMs,
-                                    prefix: prefix
+                                    prefix: ''
                                 });
-                            } catch (e) { /* skip malformed bubble */ }
+                            }
                         }
-                        return results;
+                        return results.filter(function(x){ return x !== null; });
                         """,
                         max_messages,
                         bubble_sel or "",
