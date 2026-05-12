@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -821,8 +822,39 @@ class WhatsAppSessionManager:
     def _jid_from_row_open_chat_url(
         self, driver: webdriver.Chrome, row: Any
     ) -> Optional[str]:
-        """Click a sidebar row, read the JID from the URL, then restore sidebar."""
+        """Click a sidebar row, read the JID from the URL or conversation panel, then restore sidebar."""
         jid: Optional[str] = None
+
+        def _chat_opened(d: webdriver.Chrome) -> bool:
+            if WhatsAppSessionManager._chrome_url_has_thread(d.current_url or ""):
+                return True
+            return bool(
+                d.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="conversation-panel-wrapper"]'
+                )
+            )
+
+        def _read_jid_from_state(d: webdriver.Chrome) -> Optional[str]:
+            cur = d.current_url or ""
+            if WhatsAppSessionManager._chrome_url_has_thread(cur):
+                candidate = self._jid_from_chat_href_including_groups(cur)
+                if not candidate and "phone=" in cur.lower():
+                    try:
+                        q = parse_qs(urlparse(cur).query)
+                        ph = (q.get("phone") or [None])[0]
+                        if ph and re.fullmatch(r"\d{10,15}", ph.strip()):
+                            candidate = f"{ph.strip()}@c.us"
+                    except Exception:
+                        pass
+                if candidate:
+                    return candidate
+            # URL didn't give us a JID — try the conversation panel
+            if d.find_elements(
+                By.CSS_SELECTOR, '[data-testid="conversation-panel-wrapper"]'
+            ):
+                return self._jid_from_conversation_panel(d)
+            return None
+
         try:
             driver.execute_script(
                 "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
@@ -830,21 +862,70 @@ class WhatsAppSessionManager:
             )
             time.sleep(0.12)
             driver.execute_script("arguments[0].click();", row)
-            WebDriverWait(driver, 12).until(
-                lambda d: WhatsAppSessionManager._chrome_url_has_thread(
-                    d.current_url or ""
+
+            try:
+                WebDriverWait(driver, 12).until(_chat_opened)
+            except Exception:
+                pass
+
+            cur_url = driver.current_url or ""
+            url_has_thread = WhatsAppSessionManager._chrome_url_has_thread(cur_url)
+            panel_visible = bool(
+                driver.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="conversation-panel-wrapper"]'
                 )
             )
-            cur_url = driver.current_url or ""
-            jid = self._jid_from_chat_href_including_groups(cur_url)
-            if not jid and "phone=" in cur_url.lower():
+            log.info(
+                "list_chats row_click_attempt business_id=%s "
+                "url=%s url_thread=%s panel=%s",
+                self._business_id,
+                cur_url[:80],
+                url_has_thread,
+                panel_visible,
+            )
+
+            if url_has_thread or panel_visible:
+                jid = _read_jid_from_state(driver)
+
+            # If JS click didn't open anything, retry with ActionChains native click.
+            if not jid and not url_has_thread and not panel_visible:
+                log.info(
+                    "list_chats row_click_retry_native business_id=%s",
+                    self._business_id,
+                )
                 try:
-                    q = parse_qs(urlparse(cur_url).query)
-                    ph = (q.get("phone") or [None])[0]
-                    if ph and re.fullmatch(r"\d{10,15}", ph.strip()):
-                        jid = f"{ph.strip()}@c.us"
+                    ActionChains(driver).move_to_element(row).click().perform()
+                    try:
+                        WebDriverWait(driver, 8).until(_chat_opened)
+                    except Exception:
+                        pass
+                    cur_url2 = driver.current_url or ""
+                    url_has_thread2 = WhatsAppSessionManager._chrome_url_has_thread(
+                        cur_url2
+                    )
+                    panel_visible2 = bool(
+                        driver.find_elements(
+                            By.CSS_SELECTOR,
+                            '[data-testid="conversation-panel-wrapper"]',
+                        )
+                    )
+                    log.info(
+                        "list_chats row_click_native_result business_id=%s "
+                        "url=%s url_thread=%s panel=%s",
+                        self._business_id,
+                        cur_url2[:80],
+                        url_has_thread2,
+                        panel_visible2,
+                    )
+                    if url_has_thread2 or panel_visible2:
+                        jid = _read_jid_from_state(driver)
                 except Exception:
-                    pass
+                    log.warning(
+                        "list_chats row_click_native_failed business_id=%s",
+                        self._business_id,
+                        exc_info=True,
+                    )
+
             log.info(
                 "list_chats row_click_resolve business_id=%s jid=%s",
                 self._business_id,
@@ -893,6 +974,71 @@ class WhatsAppSessionManager:
             except Exception:
                 pass
         return jid
+
+    def _jid_from_conversation_panel(
+        self, driver: webdriver.Chrome
+    ) -> Optional[str]:
+        """Extract a JID from the currently-open conversation without using the URL."""
+        # Most reliable: message data-id attrs encode the JID as
+        # "true_PHONE@c.us_MSGID" or "false_PHONE@c.us_MSGID".
+        try:
+            raw = driver.execute_script(
+                """
+                var els = document.querySelectorAll('[data-id]');
+                for (var i = 0; i < els.length; i++) {
+                    var dataId = els[i].getAttribute('data-id') || '';
+                    var m = dataId.match(
+                        /(?:true|false)_(\\d{10,15}@(?:c\\.us|s\\.whatsapp\\.net|g\\.us))/
+                    );
+                    if (m) return m[1];
+                }
+                return null;
+                """
+            )
+            if raw:
+                jid = WhatsAppSessionManager._validate_jid(str(raw))
+                if jid:
+                    log.info(
+                        "list_chats panel_jid_from_data_id business_id=%s jid=%s",
+                        self._business_id,
+                        jid.split("@")[0][:24],
+                    )
+                    return jid
+        except Exception:
+            pass
+
+        # Fallback: aria-label / title on conversation header elements
+        for sel in (
+            '[data-testid="conversation-header"]',
+            '[data-testid="contact-info"]',
+            '[data-testid="conversation-panel-wrapper"]',
+        ):
+            try:
+                for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                    for attr in ("aria-label", "title"):
+                        text = (el.get_attribute(attr) or "").strip()
+                        if text:
+                            candidate = WhatsAppSessionManager._jid_from_display_name_phone(
+                                text
+                            )
+                            if candidate:
+                                jid = WhatsAppSessionManager._validate_jid(candidate)
+                                if jid:
+                                    log.info(
+                                        "list_chats panel_jid_from_header "
+                                        "business_id=%s jid=%s sel=%s",
+                                        self._business_id,
+                                        jid.split("@")[0][:24],
+                                        sel,
+                                    )
+                                    return jid
+            except Exception:
+                pass
+
+        log.info(
+            "list_chats panel_jid_not_found business_id=%s", self._business_id
+        )
+        return None
 
     def _wait_for_real_sidebar_chats(
         self, driver: webdriver.Chrome, timeout: float = 90.0
@@ -2220,15 +2366,20 @@ class WhatsAppSessionManager:
                 raise RuntimeError("not_logged_in")
 
             # Step 1: Click the matching sidebar row — no full page navigation.
-            # jid_local is the phone-number part before "@"; it appears verbatim
-            # in sidebar hrefs regardless of URL-encoding of the @ sign.
+            # jid_local is the phone-number part before "@"; appears verbatim in hrefs.
+            # jid_digits is pure digits — used to match rows whose title is a phone number
+            # with formatting characters (spaces, dashes, parentheses).
             jid_local = normalized.split("@")[0]
+            jid_digits = "".join(c for c in jid_local if c.isdigit())
             clicked: bool = False
             try:
                 clicked = bool(
                     driver.execute_script(
                         """
                         var jidLocal = arguments[0];
+                        var jidDigits = arguments[1];
+
+                        // 1. Sidebar /chat/ links that embed the JID in the href
                         var links = document.querySelectorAll(
                             '#pane-side a[href*="/chat/"], #pane-side [href*="/chat/"]'
                         );
@@ -2239,6 +2390,8 @@ class WhatsAppSessionManager:
                                 return true;
                             }
                         }
+
+                        // 2. cell-frame-container inner links
                         var containers = document.querySelectorAll(
                             '[data-testid="cell-frame-container"]'
                         );
@@ -2254,9 +2407,32 @@ class WhatsAppSessionManager:
                                 }
                             }
                         }
+
+                        // 3. Match by phone digits in the row title (for contacts
+                        //    whose display name IS their phone number, with formatting)
+                        if (jidDigits && jidDigits.length >= 8) {
+                            for (var k = 0; k < containers.length; k++) {
+                                var titleEl = containers[k].querySelector(
+                                    '[data-testid="cell-frame-title"]'
+                                );
+                                if (!titleEl) continue;
+                                var digits = (titleEl.textContent || '').replace(/\\D/g, '');
+                                // suffix match: jidDigits must be a suffix of the title digits
+                                // (handles country-code variants)
+                                if (digits.length >= 8 &&
+                                    (digits === jidDigits ||
+                                     digits.endsWith(jidDigits) ||
+                                     jidDigits.endsWith(digits))) {
+                                    containers[k].click();
+                                    return true;
+                                }
+                            }
+                        }
+
                         return false;
                         """,
                         jid_local,
+                        jid_digits,
                     )
                 )
             except Exception as exc:
@@ -2290,7 +2466,9 @@ class WhatsAppSessionManager:
                 clicked,
             )
 
-            # Step 2: Wait only for the first message bubble to appear.
+            # Step 2: Wait for the first message bubble using progressively broader
+            # selectors in a single combined check so we don't waste time retrying
+            # sequentially after a timeout.
             remaining = deadline - time.time()
             if remaining < 2.0:
                 log.warning(
@@ -2308,17 +2486,47 @@ class WhatsAppSessionManager:
                     "messages": [],
                 }
 
+            # Selectors tried in order from most to least specific.
+            _BUBBLE_SELECTORS = (
+                '[data-testid="msg-container"]',
+                '[data-testid*="msg-"]',
+                '#main [data-id]',
+                'span[copyable-text]',
+            )
+
+            def _first_bubble_sel(d: webdriver.Chrome) -> Optional[str]:
+                for sel in _BUBBLE_SELECTORS:
+                    try:
+                        if d.find_elements(By.CSS_SELECTOR, sel):
+                            return sel
+                    except Exception:
+                        pass
+                return None
+
+            bubble_sel: Optional[str] = None
             try:
-                WebDriverWait(driver, max(2.0, remaining - 1.0)).until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR, '[data-testid="msg-container"]')
-                    )
+                bubble_sel = WebDriverWait(
+                    driver, max(2.0, remaining - 1.0)
+                ).until(_first_bubble_sel)
+                log.info(
+                    "fetch_chat_messages first_bubble jid=%s sel=%s elapsed_ms=%.0f",
+                    normalized,
+                    bubble_sel,
+                    (time.time() - t_start) * 1000,
                 )
             except Exception:
                 log.warning(
-                    "fetch_chat_messages first_bubble_timeout jid=%s elapsed_ms=%.0f",
+                    "fetch_chat_messages first_bubble_timeout jid=%s elapsed_ms=%.0f "
+                    "url=%s panel=%s",
                     normalized,
                     (time.time() - t_start) * 1000,
+                    (driver.current_url or "")[:80],
+                    bool(
+                        driver.find_elements(
+                            By.CSS_SELECTOR,
+                            '[data-testid="conversation-panel-wrapper"]',
+                        )
+                    ),
                 )
                 now_ms = int(time.time() * 1000)
                 return {
@@ -2330,12 +2538,6 @@ class WhatsAppSessionManager:
                     "messages": [],
                 }
 
-            log.info(
-                "fetch_chat_messages first_bubble jid=%s elapsed_ms=%.0f",
-                normalized,
-                (time.time() - t_start) * 1000,
-            )
-
             # Step 3: Extract all visible message bubbles in one JS call.
             raw_msgs: List[Dict[str, Any]] = []
             try:
@@ -2346,19 +2548,25 @@ class WhatsAppSessionManager:
                         var containers = document.querySelectorAll(
                             '[data-testid="msg-container"]'
                         );
+                        if (!containers.length) {
+                            containers = document.querySelectorAll('#main [data-id]');
+                        }
                         var results = [];
                         var start = containers.length > limit
                             ? containers.length - limit : 0;
                         for (var i = start; i < containers.length; i++) {
                             var c = containers[i];
                             try {
-                                var isOut = c.querySelector('.message-out') !== null;
+                                var isOut = c.classList.contains('message-out') ||
+                                            c.querySelector('.message-out') !== null;
 
                                 var textEls = c.querySelectorAll(
                                     'span.selectable-text.copyable-text span'
                                 );
                                 if (!textEls.length)
                                     textEls = c.querySelectorAll('.selectable-text span');
+                                if (!textEls.length)
+                                    textEls = c.querySelectorAll('span[copyable-text]');
                                 var texts = [];
                                 for (var t = 0; t < textEls.length; t++) {
                                     var tx = (textEls[t].textContent || '').trim();
