@@ -2608,27 +2608,47 @@ class WhatsAppSessionManager:
                 }
 
             # Step 3: Extract all visible message bubbles in one JS call.
+            # Pass bubble_sel as a JS argument so extraction can fall back to
+            # the exact selector that already confirmed DOM presence.
             raw_msgs: List[Dict[str, Any]] = []
             try:
                 raw_msgs = (
                     driver.execute_script(
                         """
                         var limit = arguments[0];
+                        var bubbleSel = arguments[1] || '';
+
+                        // Container resolution: most to least specific.
                         var containers = document.querySelectorAll(
                             '[data-testid="msg-container"]'
                         );
-                        if (!containers.length) {
+                        if (!containers.length)
                             containers = document.querySelectorAll('#main [data-id]');
-                        }
+                        if (!containers.length && bubbleSel)
+                            containers = document.querySelectorAll(bubbleSel);
+                        if (!containers.length)
+                            containers = document.querySelectorAll('[data-testid*="msg-"]');
+
                         var results = [];
                         var start = containers.length > limit
                             ? containers.length - limit : 0;
                         for (var i = start; i < containers.length; i++) {
                             var c = containers[i];
                             try {
+                                // Direction: check self, then walk up to 6 ancestors.
                                 var isOut = c.classList.contains('message-out') ||
                                             c.querySelector('.message-out') !== null;
+                                if (!isOut) {
+                                    var anc = c.parentElement;
+                                    for (var d = 0; d < 6 && anc && anc.id !== 'main'; d++) {
+                                        if (anc.classList.contains('message-out')) {
+                                            isOut = true; break;
+                                        }
+                                        anc = anc.parentElement;
+                                    }
+                                }
 
+                                // Text: progressively broader selectors, then innerText.
                                 var textEls = c.querySelectorAll(
                                     'span.selectable-text.copyable-text span'
                                 );
@@ -2641,6 +2661,18 @@ class WhatsAppSessionManager:
                                     var tx = (textEls[t].textContent || '').trim();
                                     if (tx) texts.push(tx);
                                 }
+                                // Last resort: container's own visible text (capped 500 chars).
+                                if (!texts.length) {
+                                    var rawText = (c.innerText || c.textContent || '').trim();
+                                    var lines = rawText.split('\n');
+                                    var bodyLines = [];
+                                    for (var li = 0; li < lines.length; li++) {
+                                        var ln = lines[li].trim();
+                                        if (ln.length > 3) bodyLines.push(ln);
+                                    }
+                                    var plain = bodyLines.join(' ').substring(0, 500);
+                                    if (plain) texts.push(plain);
+                                }
 
                                 var tsMs = 0;
                                 var dataId = c.getAttribute('data-id') || '';
@@ -2652,10 +2684,10 @@ class WhatsAppSessionManager:
                                 if (!tsMs) {
                                     var tsEl = c.querySelector('[data-timestamp]');
                                     if (tsEl) {
-                                        var raw = parseInt(
+                                        var rawTs = parseInt(
                                             tsEl.getAttribute('data-timestamp'), 10
                                         );
-                                        if (!isNaN(raw)) tsMs = raw * 1000;
+                                        if (!isNaN(rawTs)) tsMs = rawTs * 1000;
                                     }
                                 }
 
@@ -2664,7 +2696,7 @@ class WhatsAppSessionManager:
                                 if (metaEl) {
                                     prefix = (
                                         metaEl.getAttribute('data-pre-plain-text') || ''
-                                    ).replace(/ /g, ' ').trim();
+                                    ).replace(/ /g, ' ').trim();
                                     prefix = prefix.split('\\n')[0].substring(0, 120);
                                 }
 
@@ -2679,6 +2711,7 @@ class WhatsAppSessionManager:
                         return results;
                         """,
                         max_messages,
+                        bubble_sel or "",
                     )
                     or []
                 )
