@@ -813,50 +813,16 @@ class WhatsAppSessionManager:
         if vj:
             return vj, "ancestor_attrs", None
 
-        # ── 6. click_navigate (ground truth, budget-gated) ───────────────────
-        if self._list_chats_row_click_budget > 0:
-            self._list_chats_row_click_budget -= 1
-            jid_c = self._jid_from_row_open_chat_url(driver, row)
-            vj = _accept(jid_c, "click_navigate")
-            if vj:
-                log.info(
-                    "list_chats row_jid_candidate business_id=%s row=%s "
-                    "candidate_jid=%s method=click_navigate outcome=accepted budget_left=%s",
-                    self._business_id,
-                    row_index,
-                    vj.split("@")[0][:32],
-                    self._list_chats_row_click_budget,
-                )
-                return vj, "click_navigate", f"budget_left={self._list_chats_row_click_budget}"
-            # click already happened (browser navigated away and back); must return
-            # here regardless — cannot fall through to another method.
-            return (
-                None,
-                "click_navigate_failed_or_duplicate",
-                f"budget_left={self._list_chats_row_click_budget}",
-            )
-
-        return None, "no_row_click_budget_left", None
+        # All DOM methods exhausted.  Click-based ground-truth resolution is handled
+        # after the full scroll phase completes so that browser navigation never
+        # invalidates the Selenium element references still held by the active pass.
+        return None, "all_dom_methods_exhausted", None
 
     def _jid_from_row_open_chat_url(
         self, driver: webdriver.Chrome, row: Any
     ) -> Optional[str]:
-        """Open row chat, read JID from location bar, return to list."""
-        try:
-            cur = driver.current_url or ""
-            if WhatsAppSessionManager._chrome_url_has_thread(cur):
-                driver.get(WA_URL)
-                time.sleep(0.65)
-                try:
-                    WebDriverWait(driver, 18).until(
-                        EC.presence_of_element_located(
-                            (By.CSS_SELECTOR, '[data-testid="chat-list"]')
-                        )
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        """Click a sidebar row, read the JID from the URL, then restore sidebar."""
+        jid: Optional[str] = None
         try:
             driver.execute_script(
                 "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
@@ -879,8 +845,34 @@ class WhatsAppSessionManager:
                         jid = f"{ph.strip()}@c.us"
                 except Exception:
                     pass
-            driver.get(WA_URL)
-            time.sleep(0.75)
+            log.info(
+                "list_chats row_click_resolve business_id=%s jid=%s",
+                self._business_id,
+                jid.split("@")[0][:24] if jid else "none",
+            )
+        except Exception:
+            log.warning(
+                "list_chats row_click_resolve_failed business_id=%s",
+                self._business_id,
+                exc_info=True,
+            )
+        finally:
+            # Always restore the browser to the sidebar so subsequent iterations
+            # can re-gather fresh element references without stale handles.
+            try:
+                cur = driver.current_url or ""
+                if (
+                    WhatsAppSessionManager._chrome_url_has_thread(cur)
+                    or not cur.startswith("https://web.whatsapp.com")
+                ):
+                    driver.get(WA_URL)
+                    time.sleep(0.65)
+            except Exception:
+                try:
+                    driver.get(WA_URL)
+                    time.sleep(0.65)
+                except Exception:
+                    pass
             try:
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located(
@@ -889,24 +881,18 @@ class WhatsAppSessionManager:
                 )
             except Exception:
                 pass
-            log.info(
-                "list_chats row_click_resolve business_id=%s jid=%s",
-                self._business_id,
-                (jid or "none").split("@")[0][:24] if jid else "none",
-            )
-            return jid
-        except Exception:
-            log.warning(
-                "list_chats row_click_resolve_failed business_id=%s",
-                self._business_id,
-                exc_info=True,
-            )
             try:
-                driver.get(WA_URL)
-                time.sleep(0.6)
+                WebDriverWait(driver, 8).until(
+                    lambda d: bool(
+                        d.find_elements(
+                            By.CSS_SELECTOR,
+                            '[data-testid="cell-frame-container"]',
+                        )
+                    )
+                )
             except Exception:
                 pass
-            return None
+        return jid
 
     def _wait_for_real_sidebar_chats(
         self, driver: webdriver.Chrome, timeout: float = 90.0
@@ -1327,6 +1313,129 @@ class WhatsAppSessionManager:
             len(out),
         )
 
+    def _click_remediate_unresolved_rows(
+        self,
+        driver: webdriver.Chrome,
+        out: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """
+        Post-scroll pass: click any sidebar row whose JID we still couldn't resolve
+        via DOM methods. Re-gathers fresh element references each iteration so no
+        stale handles are held across browser navigations.
+        """
+        # Scroll back to top so we see the same rows the scroll phase visited.
+        try:
+            pane = driver.find_element(By.CSS_SELECTOR, '[data-testid="chat-list"]')
+            driver.execute_script("arguments[0].scrollTop = 0;", pane)
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+        failures = 0
+        idx = 0
+        while self._list_chats_row_click_budget > 0 and failures < 6:
+            # Re-gather every iteration — previous click navigated the browser so
+            # all prior element handles are stale.
+            try:
+                rows = driver.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-container"]'
+                )
+            except Exception:
+                break
+            if idx >= len(rows):
+                break
+
+            row = rows[idx]
+            idx += 1
+
+            # Skip if this row's display name resolves to an already-captured JID.
+            try:
+                name_text = self._extract_row_display_name(row) or ""
+                # Quick pre-check: if display_name_digits resolves and is already known
+                dn_jid = WhatsAppSessionManager._jid_from_display_name_phone(name_text)
+                if dn_jid:
+                    vdn = WhatsAppSessionManager._validate_jid(dn_jid)
+                    if vdn and vdn in out:
+                        log.info(
+                            "click_remediate skip_already_captured jid=%s idx=%s",
+                            vdn.split("@")[0][:20],
+                            idx - 1,
+                        )
+                        continue
+            except Exception:
+                pass
+
+            # Extract metadata before navigating (elements are fresh here).
+            try:
+                title_el = row.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-title"]'
+                )
+                name = (title_el[0].text or "").strip() if title_el else ""
+                prev_el = row.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="last-msg-status"]'
+                )
+                preview = (prev_el[0].text or "").strip() if prev_el else ""
+                meta_el = row.find_elements(
+                    By.CSS_SELECTOR, '[data-testid="cell-frame-meta"]'
+                )
+                meta_text = (meta_el[0].text or "").strip() if meta_el else ""
+                meta_title = (
+                    (meta_el[0].get_attribute("title") or "").strip() if meta_el else ""
+                )
+                last_ms = self._parse_sidebar_time(meta_text, meta_title) or 0
+            except Exception:
+                name, preview, last_ms = "", "", 0
+
+            self._list_chats_row_click_budget -= 1
+            raw_jid = self._jid_from_row_open_chat_url(driver, row)
+            # After _jid_from_row_open_chat_url the browser is back on the sidebar;
+            # element references from before the click are all stale — don't use them.
+
+            if not raw_jid:
+                failures += 1
+                continue
+
+            jid = WhatsAppSessionManager._validate_jid(raw_jid)
+            if not jid:
+                log.info(
+                    "click_remediate invalid_jid raw=%s idx=%s",
+                    str(raw_jid)[:30],
+                    idx - 1,
+                )
+                continue
+
+            if jid in out:
+                log.info(
+                    "click_remediate skip_already_captured jid=%s idx=%s",
+                    jid.split("@")[0][:20],
+                    idx - 1,
+                )
+                continue
+
+            digits = "".join(ch for ch in jid.split("@")[0] if ch.isdigit())
+            display_name = name or ("+" + digits if digits else "Contact")
+            out[jid] = {
+                "chat_jid": jid,
+                "phone_digits": digits,
+                "display_name": display_name,
+                "last_message_preview": preview,
+                "last_message_at_ms": last_ms or 0,
+            }
+            log.info(
+                "click_remediate captured jid=%s name=%s idx=%s budget_left=%s",
+                jid.split("@")[0][:20],
+                display_name[:20],
+                idx - 1,
+                self._list_chats_row_click_budget,
+            )
+
+        log.info(
+            "click_remediate done business_id=%s captured=%s budget_left=%s",
+            self._business_id,
+            sum(1 for v in out.values() if v),
+            self._list_chats_row_click_budget,
+        )
+
     def list_chats(self, scroll_rounds: int = 32) -> List[Dict[str, Any]]:
         with self._lock:
             driver = self._driver
@@ -1374,6 +1483,12 @@ class WhatsAppSessionManager:
             )
 
             self._capture_chat_rows_from_pane_links(driver, aggregated)
+
+            # Click-remediate any rows whose JID the DOM scroll phase couldn't
+            # resolve. Runs after the full scroll so browser navigation here
+            # never invalidates element handles held during scrolling.
+            if self._list_chats_row_click_budget > 0:
+                self._click_remediate_unresolved_rows(driver, aggregated)
 
             if not aggregated and _click_fallback_enabled():
                 if self._sidebar_has_titled_chat_rows(driver):
